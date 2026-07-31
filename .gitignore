@@ -1,0 +1,46 @@
+# Python bytecode and interpreter caches
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Python tool caches and coverage artifacts
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyright/
+.hypothesis/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+
+# Virtual environments
+.venv/
+venv/
+
+# Build and package artifacts
+build/
+dist/
+*.egg-info/
+
+# Frontend dependency and build caches
+node_modules/
+.vite/
+*.tsbuildinfo
+
+# Temporary files and directories
+.cache/
+tmp/
+temp/
+*.tmp
+*.temp
+*.swp
+*.swo
+*~
+
+# Operating-system metadata
+.DS_Store
+Thumbs.db
+Desktop.ini
