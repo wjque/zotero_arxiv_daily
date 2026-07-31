@@ -20,6 +20,13 @@ htmlcov/
 .venv/
 venv/
 
+# Local credentials and runtime state
+.env
+.env.*
+!.env.example
+data/
+runtime/
+
 # Build and package artifacts
 build/
 dist/

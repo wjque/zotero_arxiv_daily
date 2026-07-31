@@ -1,0 +1,88 @@
+"""Thin command-line entry point for currently implemented use cases."""
+
+from __future__ import annotations
+
+import argparse
+import json
+from collections.abc import Sequence
+from dataclasses import asdict
+from pathlib import Path
+
+from zotero_arxiv_daily import __version__
+from zotero_arxiv_daily.core.config import load_config
+from zotero_arxiv_daily.core.errors import ApplicationError
+from zotero_arxiv_daily.doctor import Diagnostic, doctor_exit_code, run_doctor
+from zotero_arxiv_daily.zotero.client import ZoteroLocalClient
+from zotero_arxiv_daily.zotero.storage import ZoteroStore
+from zotero_arxiv_daily.zotero.sync import synchronize
+
+
+def build_parser() -> argparse.ArgumentParser:
+    """Build the CLI parser without performing configuration or network work."""
+
+    parser = argparse.ArgumentParser(prog="zotero-arxiv-daily")
+    parser.add_argument("--version", action="version", version=__version__)
+    parser.add_argument("--config", type=Path, help="Path to a TOML or JSON configuration file")
+    parser.add_argument("--zotero-base-url", help="Override the local Zotero API base URL")
+    subcommands = parser.add_subparsers(dest="command", required=True)
+    doctor_parser = subcommands.add_parser(
+        "doctor", help="Diagnose local and protected dependencies"
+    )
+    doctor_parser.add_argument(
+        "--skip-zotero-check", action="store_true", help="Do not contact the local Zotero API"
+    )
+    doctor_parser.add_argument("--format", choices=("text", "json"), default="text")
+    profile_parser = subcommands.add_parser(
+        "profile", help="Manage the local interest-profile source"
+    )
+    profile_commands = profile_parser.add_subparsers(dest="profile_command", required=True)
+    sync_parser = profile_commands.add_parser("sync", help="Synchronize the local Zotero library")
+    sync_parser.add_argument(
+        "--database", type=Path, help="Override the local SQLite database path"
+    )
+    sync_parser.add_argument("--format", choices=("text", "json"), default="text")
+    return parser
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Run a supported command and return a stable automation-friendly exit code."""
+
+    args = build_parser().parse_args(argv)
+    try:
+        config = load_config(
+            config_path=args.config,
+            overrides={"zotero_base_url": args.zotero_base_url},
+        )
+        if args.command == "doctor":
+            diagnostics = run_doctor(config, check_zotero=not args.skip_zotero_check)
+            _render_diagnostics(diagnostics, args.format)
+            return int(doctor_exit_code(diagnostics))
+        if args.command == "profile" and args.profile_command == "sync":
+            database_path = args.database or Path(config.local_database_path)
+            result = synchronize(
+                ZoteroLocalClient(config.zotero_base_url), ZoteroStore(database_path)
+            )
+            if args.format == "json":
+                print(json.dumps(asdict(result), ensure_ascii=False))
+            else:
+                print(
+                    f"{result.mode} sync complete: {result.items_written} written, "
+                    f"{result.items_unchanged} unchanged, {result.items_deleted} deleted"
+                )
+            return 0
+    except ApplicationError as error:
+        print(f"configuration error: {error}")
+        return int(error.exit_code)
+    raise AssertionError(f"unsupported command: {args.command}")
+
+
+def _render_diagnostics(diagnostics: Sequence[Diagnostic], output_format: str) -> None:
+    if output_format == "json":
+        print(json.dumps([item.to_dict() for item in diagnostics], ensure_ascii=False))
+        return
+    for item in diagnostics:
+        print(f"{item.name}: {item.state.value} — {item.detail}")
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
