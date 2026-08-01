@@ -51,9 +51,22 @@ def test_model_output_normalizes_an_allowed_arxiv_identifier() -> None:
     )
 
     assert proposals[0].arxiv_id == "2401.00001"
-    with pytest.raises(ExternalServiceError, match="outside"):
+    with pytest.raises(ExternalServiceError, match="was not requested"):
         parse_proposals(
             '[{"arxiv_id":"9999.99999","quality":1,"summary":"x","reason":"x"}]',
+            frozenset({"2401.00001"}),
+        )
+
+
+def test_model_output_reports_safe_identifier_failure_categories() -> None:
+    with pytest.raises(ExternalServiceError, match="must be a string"):
+        parse_proposals(
+            '[{"arxiv_id":2401,"quality":1,"summary":"x","reason":"x"}]',
+            frozenset({"2401.00001"}),
+        )
+    with pytest.raises(ExternalServiceError, match="malformed"):
+        parse_proposals(
+            '[{"arxiv_id":"not-an-id","quality":1,"summary":"x","reason":"x"}]',
             frozenset({"2401.00001"}),
         )
 

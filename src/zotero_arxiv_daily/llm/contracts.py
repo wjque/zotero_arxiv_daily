@@ -31,24 +31,16 @@ def parse_proposals(payload: str, allowed_ids: frozenset[str]) -> tuple[ModelPro
         if not isinstance(item, dict) or set(item) != {"arxiv_id", "quality", "summary", "reason"}:
             raise ExternalServiceError("model response has unsupported fields")
         identifier, quality, summary, reason = item.values()
-        if (
-            not isinstance(identifier, str)
-            or not isinstance(quality, (int, float))
-            or not 0 <= quality <= 1
-        ):
-            raise ExternalServiceError(
-                "model proposal is invalid or outside the requested candidates"
-            )
+        if not isinstance(identifier, str):
+            raise ExternalServiceError("model proposal arxiv_id must be a string")
+        if not isinstance(quality, (int, float)) or not 0 <= quality <= 1:
+            raise ExternalServiceError("model proposal quality is invalid")
         try:
             canonical_id = parse_arxiv_id(identifier).canonical
         except ConfigurationError as error:
-            raise ExternalServiceError(
-                "model proposal is invalid or outside the requested candidates"
-            ) from error
+            raise ExternalServiceError("model proposal arxiv_id is malformed") from error
         if canonical_id not in allowed_ids:
-            raise ExternalServiceError(
-                "model proposal is invalid or outside the requested candidates"
-            )
+            raise ExternalServiceError("model proposal arxiv_id was not requested")
         if (
             not isinstance(summary, str)
             or not isinstance(reason, str)
