@@ -19,6 +19,8 @@ _ENVIRONMENT_KEYS = {
     "ZAD_ZOTERO_BASE_URL": "zotero_base_url",
     "ZAD_LOCAL_DATABASE_PATH": "local_database_path",
     "ZAD_DEEPSEEK_API_KEY": "deepseek_api_key",
+    "ZAD_DEEPSEEK_TIMEOUT_SECONDS": "deepseek_timeout_seconds",
+    "ZAD_RECOMMENDATION_CANDIDATE_LIMIT": "recommendation_candidate_limit",
     "ZAD_GITHUB_REPOSITORY": "github_repository",
     "ZAD_GITHUB_TOKEN": "github_token",
     "ZAD_PAGES_PASSPHRASE": "pages_passphrase",
@@ -35,6 +37,8 @@ class AppConfig:
     zotero_base_url: str = "http://127.0.0.1:23119"
     local_database_path: str = "runtime/zotero.sqlite3"
     deepseek_api_key: str | None = None
+    deepseek_timeout_seconds: float = 60.0
+    recommendation_candidate_limit: int = 40
     github_repository: str | None = None
     github_token: str | None = None
     pages_passphrase: str | None = None
@@ -53,6 +57,10 @@ class AppConfig:
             raise ConfigurationError("github_repository must use the owner/repository format")
         if not self.output_language.strip():
             raise ConfigurationError("output_language must not be empty")
+        if not 10 <= self.deepseek_timeout_seconds <= 120:
+            raise ConfigurationError("deepseek_timeout_seconds must be between 10 and 120")
+        if not 40 <= self.recommendation_candidate_limit <= 80:
+            raise ConfigurationError("recommendation_candidate_limit must be between 40 and 80")
         if self.public_output and self.pages_passphrase:
             raise ConfigurationError("pages_passphrase must be unset when public_output is enabled")
 
@@ -81,6 +89,14 @@ def load_config(
             normalized_values, "local_database_path", defaults.local_database_path
         ),
         deepseek_api_key=_optional_string_value(normalized_values, "deepseek_api_key"),
+        deepseek_timeout_seconds=_float_value(
+            normalized_values, "deepseek_timeout_seconds", defaults.deepseek_timeout_seconds
+        ),
+        recommendation_candidate_limit=_int_value(
+            normalized_values,
+            "recommendation_candidate_limit",
+            defaults.recommendation_candidate_limit,
+        ),
         github_repository=_optional_string_value(normalized_values, "github_repository"),
         github_token=_optional_string_value(normalized_values, "github_token"),
         pages_passphrase=_optional_string_value(normalized_values, "pages_passphrase"),
@@ -131,6 +147,15 @@ def _normalize_values(values: Mapping[str, object]) -> dict[str, object]:
     for name in ("zotero_base_url", "local_database_path", "output_language"):
         if name in normalized and not isinstance(normalized[name], str):
             raise ConfigurationError(f"{name} must be a string")
+    for name in ("deepseek_timeout_seconds", "recommendation_candidate_limit"):
+        value = normalized.get(name)
+        if isinstance(value, str):
+            try:
+                normalized[name] = float(value)
+            except ValueError as error:
+                raise ConfigurationError(f"{name} must be numeric") from error
+        if name in normalized and not isinstance(normalized[name], (int, float)):
+            raise ConfigurationError(f"{name} must be numeric")
     return normalized
 
 
@@ -165,3 +190,19 @@ def _bool_value(values: Mapping[str, object], name: str, default: bool) -> bool:
     if isinstance(value, bool):
         return value
     raise AssertionError(f"{name} was not normalized")
+
+
+def _float_value(values: Mapping[str, object], name: str, default: float) -> float:
+    value = values.get(name, default)
+    if isinstance(value, (int, float)):
+        return float(value)
+    raise AssertionError(f"{name} was not normalized")
+
+
+def _int_value(values: Mapping[str, object], name: str, default: int) -> int:
+    value = values.get(name, default)
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
+    raise ConfigurationError(f"{name} must be an integer")

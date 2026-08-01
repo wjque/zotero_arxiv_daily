@@ -201,11 +201,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ArxivStateStore(args.candidate_state).candidates(),
                 profile,
                 datetime.now(UTC),
-                DeepSeekClient(config.deepseek_api_key, output_language=config.output_language),
+                DeepSeekClient(
+                    config.deepseek_api_key,
+                    timeout_seconds=config.deepseek_timeout_seconds,
+                    output_language=config.output_language,
+                ),
                 ProposalCache(args.cache),
                 prompt_version="recommendation-v1",
                 model="deepseek-v4-flash",
                 feedback_adjustments=feedback.adjustments(),
+                pre_rank_limit=config.recommendation_candidate_limit,
             )
             write_published_set(make_published_set(recommendation_set), args.output)
             print(
@@ -215,7 +220,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
     except ApplicationError as error:
-        print(f"configuration error: {error}")
+        prefix = "configuration error" if error.exit_code == 2 else "operation error"
+        print(f"{prefix}: {error}")
         return int(error.exit_code)
     raise AssertionError(f"unsupported command: {args.command}")
 
