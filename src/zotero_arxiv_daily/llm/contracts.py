@@ -30,7 +30,10 @@ def parse_proposals(payload: str, allowed_ids: frozenset[str]) -> tuple[ModelPro
     for item in value:
         if not isinstance(item, dict) or set(item) != {"arxiv_id", "quality", "summary", "reason"}:
             raise ExternalServiceError("model response has unsupported fields")
-        identifier, quality, summary, reason = item.values()
+        identifier = item["arxiv_id"]
+        quality = item["quality"]
+        summary = item["summary"]
+        reason = item["reason"]
         if not isinstance(identifier, str):
             raise ExternalServiceError("model proposal arxiv_id must be a string")
         if not isinstance(quality, (int, float)) or not 0 <= quality <= 1:

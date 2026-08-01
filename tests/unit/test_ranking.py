@@ -64,6 +64,15 @@ def test_model_output_reports_safe_identifier_failure_categories() -> None:
             '[{"arxiv_id":2401,"quality":1,"summary":"x","reason":"x"}]',
             frozenset({"2401.00001"}),
         )
+
+
+def test_model_output_field_order_does_not_change_validation() -> None:
+    proposals = parse_proposals(
+        '[{"reason":"x","summary":"x","quality":0.8,"arxiv_id":"2401.00001"}]',
+        frozenset({"2401.00001"}),
+    )
+
+    assert proposals[0].quality == 0.8
     with pytest.raises(ExternalServiceError, match="malformed"):
         parse_proposals(
             '[{"arxiv_id":"not-an-id","quality":1,"summary":"x","reason":"x"}]',
