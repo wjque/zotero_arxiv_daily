@@ -2,12 +2,18 @@ from __future__ import annotations
 
 from zotero_arxiv_daily.core.config import AppConfig
 from zotero_arxiv_daily.core.errors import ExitCode
-from zotero_arxiv_daily.doctor import CheckState, doctor_exit_code, run_doctor
+from zotero_arxiv_daily.doctor import CheckState, ZoteroApiState, doctor_exit_code, run_doctor
 
 
 class AvailableZotero:
-    def probe(self, base_url: str) -> bool:
-        return base_url == "http://127.0.0.1:23119"
+    def probe(self, base_url: str) -> ZoteroApiState:
+        assert base_url == "http://127.0.0.1:23119"
+        return ZoteroApiState.AVAILABLE
+
+
+class DisabledZotero:
+    def probe(self, base_url: str) -> ZoteroApiState:
+        return ZoteroApiState.DISABLED
 
 
 def test_doctor_reports_dependencies_independently_without_secret_values() -> None:
@@ -37,3 +43,10 @@ def test_doctor_accepts_explicit_public_output() -> None:
 
     assert diagnostics[-1].state is CheckState.OK
     assert doctor_exit_code(diagnostics) is ExitCode.SUCCESS
+
+
+def test_doctor_explains_a_disabled_local_data_api() -> None:
+    diagnostics = run_doctor(AppConfig(), zotero_probe=DisabledZotero())
+
+    assert diagnostics[0].state is CheckState.MISSING
+    assert "Allow other applications" in diagnostics[0].detail

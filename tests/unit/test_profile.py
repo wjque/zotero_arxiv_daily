@@ -28,7 +28,8 @@ def test_remote_projection_is_deterministic_and_does_not_retain_raw_note_content
 
 
 def test_remote_projection_excludes_secret_like_terms() -> None:
-    root = json.dumps({"title": "sk-abcdefghijklmnopqrstu quantum research", "tags": []})
+    synthetic_key = "sk-" + "a" * 21
+    root = json.dumps({"title": f"{synthetic_key} quantum research", "tags": []})
 
     remote = project_remote(build_profile((("PAPER001", "hash", root, ()),), 1))
 
