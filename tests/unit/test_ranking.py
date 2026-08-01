@@ -47,3 +47,12 @@ def test_model_output_cannot_introduce_unknown_fields_or_ids() -> None:
             '[{"arxiv_id":"9999.99999","quality":1,"summary":"x","reason":"x"}]',
             frozenset({"2401.00001"}),
         )
+
+
+def test_feedback_adjustment_is_visible_in_local_score_components() -> None:
+    profile = RemoteProfile(1, 1, ("learning",), ("cs.LG",), (), ())
+    item = _candidate("2401.00001", "cs.LG", "Learning")
+
+    scored = pre_rank((item,), profile, datetime(2026, 8, 1, tzinfo=UTC), {"2401.00001": -0.5})
+
+    assert dict(scored[0].components)["feedback"] == -0.5

@@ -6,12 +6,21 @@ import argparse
 import json
 from collections.abc import Sequence
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 
 from zotero_arxiv_daily import __version__
+from zotero_arxiv_daily.arxiv.categories import expand_one_hop
+from zotero_arxiv_daily.arxiv.client import ArxivClient
+from zotero_arxiv_daily.arxiv.retrieval import retrieve
+from zotero_arxiv_daily.arxiv.storage import ArxivStateStore
 from zotero_arxiv_daily.core.config import load_config
 from zotero_arxiv_daily.core.errors import ApplicationError
 from zotero_arxiv_daily.doctor import Diagnostic, doctor_exit_code, run_doctor
+from zotero_arxiv_daily.feedback.ingest import FeedbackStateStore, read_github_issues
+from zotero_arxiv_daily.llm.cache import ProposalCache
+from zotero_arxiv_daily.llm.deepseek import DeepSeekClient
+from zotero_arxiv_daily.pipeline.recommend import run_recommendation
 from zotero_arxiv_daily.profile.export import write_remote_profile
 from zotero_arxiv_daily.profile.service import (
     build_cached_remote_profile,
@@ -19,7 +28,11 @@ from zotero_arxiv_daily.profile.service import (
     read_remote_profile,
 )
 from zotero_arxiv_daily.site.build import build_site
-from zotero_arxiv_daily.site.models import read_published_set
+from zotero_arxiv_daily.site.models import (
+    make_published_set,
+    read_published_set,
+    write_published_set,
+)
 from zotero_arxiv_daily.zotero.client import ZoteroLocalClient
 from zotero_arxiv_daily.zotero.storage import ZoteroStore
 from zotero_arxiv_daily.zotero.sync import synchronize
@@ -69,6 +82,42 @@ def build_parser() -> argparse.ArgumentParser:
         "--input", type=Path, default=Path("runtime/publishable-recommendations.json")
     )
     site_build_parser.add_argument("--output", type=Path, default=Path("runtime/site"))
+    feedback_parser = subcommands.add_parser("feedback", help="Ingest validated browser feedback")
+    feedback_commands = feedback_parser.add_subparsers(dest="feedback_command", required=True)
+    feedback_ingest_parser = feedback_commands.add_parser(
+        "ingest", help="Ingest a JSON projection of GitHub Issues"
+    )
+    feedback_ingest_parser.add_argument("--input", type=Path, required=True)
+    feedback_ingest_parser.add_argument(
+        "--state", type=Path, default=Path("runtime/feedback-state.json")
+    )
+    arxiv_parser = subcommands.add_parser("arxiv", help="Retrieve public arXiv candidate metadata")
+    arxiv_commands = arxiv_parser.add_subparsers(dest="arxiv_command", required=True)
+    arxiv_retrieve_parser = arxiv_commands.add_parser(
+        "retrieve", help="Retrieve profile categories"
+    )
+    arxiv_retrieve_parser.add_argument("--profile", type=Path, required=True)
+    arxiv_retrieve_parser.add_argument(
+        "--state", type=Path, default=Path("runtime/arxiv-state.json")
+    )
+    recommend_parser = subcommands.add_parser(
+        "recommend", help="Generate validated recommendations"
+    )
+    recommend_commands = recommend_parser.add_subparsers(dest="recommend_command", required=True)
+    recommend_run_parser = recommend_commands.add_parser(
+        "run", help="Run the bounded recommendation pipeline"
+    )
+    recommend_run_parser.add_argument("--profile", type=Path, required=True)
+    recommend_run_parser.add_argument("--candidate-state", type=Path, required=True)
+    recommend_run_parser.add_argument(
+        "--feedback-state", type=Path, default=Path("runtime/feedback-state.json")
+    )
+    recommend_run_parser.add_argument(
+        "--cache", type=Path, default=Path("runtime/proposal-cache.json")
+    )
+    recommend_run_parser.add_argument(
+        "--output", type=Path, default=Path("runtime/publishable-recommendations.json")
+    )
     return parser
 
 
@@ -126,6 +175,44 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             mode = "public" if not site_result.encrypted else "encrypted"
             print(f"{mode} site built: {site_result.recommendation_count} recommendations")
+            return 0
+        if args.command == "feedback" and args.feedback_command == "ingest":
+            feedback_result = FeedbackStateStore(args.state).ingest(read_github_issues(args.input))
+            print(
+                "feedback ingested: "
+                f"{feedback_result.action_count} actions, "
+                f"{feedback_result.duplicate_issues} duplicates"
+            )
+            return 0
+        if args.command == "arxiv" and args.arxiv_command == "retrieve":
+            profile = read_remote_profile(args.profile)
+            categories = profile.core_categories + expand_one_hop(profile.core_categories)
+            retrieval = retrieve(
+                ArxivClient(), ArxivStateStore(args.state), categories, datetime.now(UTC)
+            )
+            print(f"arXiv retrieval complete: {len(retrieval.candidates)} candidates")
+            return 0
+        if args.command == "recommend" and args.recommend_command == "run":
+            if not config.deepseek_api_key:
+                raise ApplicationError("set ZAD_DEEPSEEK_API_KEY before generating recommendations")
+            profile = read_remote_profile(args.profile)
+            feedback = FeedbackStateStore(args.feedback_state)
+            recommendation_set, manifest = run_recommendation(
+                ArxivStateStore(args.candidate_state).candidates(),
+                profile,
+                datetime.now(UTC),
+                DeepSeekClient(config.deepseek_api_key, output_language=config.output_language),
+                ProposalCache(args.cache),
+                prompt_version="recommendation-v1",
+                model="deepseek-v4-flash",
+                feedback_adjustments=feedback.adjustments(),
+            )
+            write_published_set(make_published_set(recommendation_set), args.output)
+            print(
+                "recommendations generated: "
+                f"{manifest.recommendation_count} selected, "
+                f"{manifest.model_requests} model requests"
+            )
             return 0
     except ApplicationError as error:
         print(f"configuration error: {error}")

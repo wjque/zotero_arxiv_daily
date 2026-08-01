@@ -90,6 +90,7 @@ def run_recommendation(
     prompt_version: str,
     model: str,
     excluded_ids: frozenset[str] = frozenset(),
+    feedback_adjustments: dict[str, float] | None = None,
     pre_rank_limit: int = 80,
     estimate_cost: Callable[[int], float] | None = None,
 ) -> tuple[RecommendationSet, RecommendationRunManifest]:
@@ -101,7 +102,7 @@ def run_recommendation(
     eligible = tuple(
         candidate for candidate in candidates if candidate.arxiv_id.canonical not in excluded_ids
     )
-    ranked = pre_rank(eligible, profile, now)[:pre_rank_limit]
+    ranked = pre_rank(eligible, profile, now, feedback_adjustments)[:pre_rank_limit]
     selected_candidates = tuple(item.candidate for item in ranked)
     cached, missing, cache_hits = _load_cached_proposals(
         selected_candidates, profile, cache, prompt_version, model

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
@@ -14,7 +15,10 @@ _WORDS = re.compile(r"[a-z][a-z0-9-]{2,}")
 
 
 def pre_rank(
-    candidates: tuple[ArxivCandidate, ...], profile: RemoteProfile, now: datetime
+    candidates: tuple[ArxivCandidate, ...],
+    profile: RemoteProfile,
+    now: datetime,
+    feedback_adjustments: Mapping[str, float] | None = None,
 ) -> tuple[ScoredCandidate, ...]:
     """Score public candidates locally using derived profile terms and categories."""
 
@@ -35,7 +39,13 @@ def pre_rank(
         age = max((now.astimezone(UTC) - candidate.published).total_seconds() / 86400, 0.0)
         recency = max(0.0, 1.0 - age / 14)
         source = "core" if category == 2.0 else "adjacent" if category == 1.0 else "exploration"
-        components = (("lexical", lexical), ("category", category), ("recency", recency))
+        feedback = (feedback_adjustments or {}).get(candidate.arxiv_id.canonical, 0.0)
+        components = (
+            ("lexical", lexical),
+            ("category", category),
+            ("recency", recency),
+            ("feedback", feedback),
+        )
         scored.append(
             ScoredCandidate(candidate, sum(value for _, value in components), components, source)
         )
