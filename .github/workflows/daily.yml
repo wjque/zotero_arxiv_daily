@@ -37,6 +37,7 @@ jobs:
           fi
       - name: Retrieve feedback and generate static site
         env:
+          GH_TOKEN: ${{ github.token }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           PAGES_PASSPHRASE: ${{ secrets.PAGES_PASSPHRASE }}
           REMOTE_PROFILE: ${{ secrets.ZOTERO_ARXIV_DAILY_PROFILE }}
