@@ -91,7 +91,7 @@ def run_recommendation(
     model: str,
     excluded_ids: frozenset[str] = frozenset(),
     feedback_adjustments: dict[str, float] | None = None,
-    pre_rank_limit: int = 80,
+    pre_rank_limit: int = 60,
     estimate_cost: Callable[[int], float] | None = None,
 ) -> tuple[RecommendationSet, RecommendationRunManifest]:
     """Run bounded, cached model work while retaining final policy locally."""
