@@ -39,7 +39,12 @@ def recommend(
             continue
         records.append(
             RecommendationRecord(
-                item.candidate, item.score, item.source, proposal.summary, proposal.reason
+                item.candidate,
+                item.score,
+                item.source,
+                proposal.quality,
+                proposal.summary,
+                proposal.reason,
             )
         )
     return tuple(records)

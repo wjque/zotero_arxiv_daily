@@ -30,3 +30,7 @@ class ExternalServiceError(ApplicationError):
     """Raised when a required external boundary cannot be reached safely."""
 
     exit_code = ExitCode.DEPENDENCY_UNAVAILABLE
+
+
+class SecurityError(ApplicationError):
+    """Raised when protected data cannot be encrypted, authenticated, or safely decoded."""

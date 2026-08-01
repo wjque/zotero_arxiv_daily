@@ -21,6 +21,7 @@ class RecommendationRecord:
     candidate: ArxivCandidate
     score: float
     source: str
+    quality: float
     summary: str
     reason: str
 
