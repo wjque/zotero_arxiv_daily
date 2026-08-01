@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import json
+import socket
+import ssl
 from dataclasses import dataclass
 from typing import Protocol, cast
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from zotero_arxiv_daily.core.errors import ExternalServiceError
@@ -30,8 +33,30 @@ class UrlLibJsonTransport:
         try:
             with urlopen(request, timeout=timeout_seconds) as response:  # noqa: S310
                 return cast(bytes, response.read()).decode("utf-8")
+        except HTTPError as error:
+            raise _http_error(error.code) from error
+        except URLError as error:
+            if isinstance(error.reason, socket.gaierror):
+                raise ExternalServiceError("DeepSeek DNS resolution failed") from error
+            if isinstance(error.reason, ssl.SSLError):
+                raise ExternalServiceError("DeepSeek TLS connection failed") from error
+            raise ExternalServiceError("DeepSeek network connection failed") from error
+        except TimeoutError as error:
+            raise ExternalServiceError("DeepSeek request timed out") from error
         except OSError as error:
-            raise ExternalServiceError("DeepSeek request failed") from error
+            raise ExternalServiceError("DeepSeek local transport failed") from error
+
+
+def _http_error(status_code: int) -> ExternalServiceError:
+    if status_code in {401, 403}:
+        return ExternalServiceError(
+            f"DeepSeek authentication or model access failed (HTTP {status_code})"
+        )
+    if status_code == 429:
+        return ExternalServiceError("DeepSeek rate limit or quota exceeded (HTTP 429)")
+    if 500 <= status_code <= 599:
+        return ExternalServiceError(f"DeepSeek service failed transiently (HTTP {status_code})")
+    return ExternalServiceError(f"DeepSeek request was rejected (HTTP {status_code})")
 
 
 @dataclass(slots=True)

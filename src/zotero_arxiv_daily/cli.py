@@ -215,7 +215,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
     except ApplicationError as error:
-        print(f"configuration error: {error}")
+        prefix = "configuration error" if error.exit_code == 2 else "operation error"
+        print(f"{prefix}: {error}")
         return int(error.exit_code)
     raise AssertionError(f"unsupported command: {args.command}")
 
