@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass
 from enum import StrEnum
 from typing import Protocol, cast
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from zotero_arxiv_daily.core.config import AppConfig
@@ -19,6 +19,14 @@ class CheckState(StrEnum):
     MISSING = "missing"
     UNAVAILABLE = "unavailable"
     NOT_CHECKED = "not_checked"
+
+
+class ZoteroApiState(StrEnum):
+    """States returned by a read-only probe of Zotero's Local API root."""
+
+    AVAILABLE = "available"
+    DISABLED = "disabled"
+    UNAVAILABLE = "unavailable"
 
 
 @dataclass(frozen=True, slots=True)
@@ -36,20 +44,25 @@ class Diagnostic:
 class ZoteroProbe(Protocol):
     """Small interface that permits a deterministic local-network test."""
 
-    def probe(self, base_url: str) -> bool:
-        """Return whether Zotero Local API's connector endpoint responds."""
+    def probe(self, base_url: str) -> ZoteroApiState:
+        """Return the availability state of Zotero's local data API."""
 
 
 class HttpZoteroProbe:
-    """Probe only Zotero's local connector endpoint with a short timeout."""
+    """Probe Zotero's Local API root without retrieving library data."""
 
-    def probe(self, base_url: str) -> bool:
-        request = Request(f"{base_url.rstrip('/')}/connector/ping", method="GET")
+    def probe(self, base_url: str) -> ZoteroApiState:
+        request = Request(f"{base_url.rstrip('/')}/api/", method="GET")
         try:
             with urlopen(request, timeout=1.0) as response:  # noqa: S310 - validated local URL
-                return 200 <= cast(int, response.getcode()) < 300
+                if 200 <= cast(int, response.getcode()) < 300:
+                    return ZoteroApiState.AVAILABLE
+        except HTTPError as error:
+            if error.code == 403:
+                return ZoteroApiState.DISABLED
         except (OSError, URLError):
-            return False
+            pass
+        return ZoteroApiState.UNAVAILABLE
 
 
 def run_doctor(
@@ -91,12 +104,19 @@ def _zotero_diagnostic(
 ) -> Diagnostic:
     if not check_zotero:
         return Diagnostic("Zotero Local API", CheckState.NOT_CHECKED, "local probe skipped")
-    if zotero_probe.probe(config.zotero_base_url):
-        return Diagnostic("Zotero Local API", CheckState.OK, "connector endpoint responded")
+    state = zotero_probe.probe(config.zotero_base_url)
+    if state is ZoteroApiState.AVAILABLE:
+        return Diagnostic("Zotero Local API", CheckState.OK, "local data API responded")
+    if state is ZoteroApiState.DISABLED:
+        return Diagnostic(
+            "Zotero Local API",
+            CheckState.MISSING,
+            "enable 'Allow other applications on this computer to communicate with Zotero'",
+        )
     return Diagnostic(
         "Zotero Local API",
         CheckState.UNAVAILABLE,
-        "connector endpoint did not respond; start Zotero and enable its Local API",
+        "local data API did not respond; start Zotero and verify the Local API setting",
     )
 
 
