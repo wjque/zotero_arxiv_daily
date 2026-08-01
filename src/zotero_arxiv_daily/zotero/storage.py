@@ -103,6 +103,20 @@ class ZoteroStore:
                 )
         return tuple(rows)
 
+    def known_identifiers(self) -> frozenset[str]:
+        """Expose normalized local identifiers for later public-candidate exclusion."""
+
+        with self._connection() as connection:
+            payloads = connection.execute("SELECT payload FROM items WHERE is_seed = 1").fetchall()
+        identifiers: set[str] = set()
+        for (payload,) in payloads:
+            value = json.loads(str(payload))
+            if isinstance(value, dict):
+                identifiers.update(
+                    str(item).casefold() for item in value.get("identifiers", []) if item
+                )
+        return frozenset(identifiers)
+
     def load_digest(self, cache_key: str, prompt_version: str) -> str | None:
         """Return a local derived digest by content hash and deterministic prompt version."""
 
