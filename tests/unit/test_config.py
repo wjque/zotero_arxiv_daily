@@ -36,3 +36,17 @@ def test_configuration_rejects_unknown_file_key(tmp_path: Path) -> None:
 
     with pytest.raises(ConfigurationError, match="unsupported"):
         load_config(config_path=config_path, environment={})
+
+
+def test_configuration_validates_model_timeout_and_candidate_limit() -> None:
+    config = load_config(
+        environment={
+            "ZAD_DEEPSEEK_TIMEOUT_SECONDS": "60",
+            "ZAD_RECOMMENDATION_CANDIDATE_LIMIT": "40",
+        }
+    )
+
+    assert config.deepseek_timeout_seconds == 60.0
+    assert config.recommendation_candidate_limit == 40
+    with pytest.raises(ConfigurationError, match="candidate_limit"):
+        load_config(environment={"ZAD_RECOMMENDATION_CANDIDATE_LIMIT": "39"})

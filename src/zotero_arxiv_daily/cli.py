@@ -201,11 +201,16 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ArxivStateStore(args.candidate_state).candidates(),
                 profile,
                 datetime.now(UTC),
-                DeepSeekClient(config.deepseek_api_key, output_language=config.output_language),
+                DeepSeekClient(
+                    config.deepseek_api_key,
+                    timeout_seconds=config.deepseek_timeout_seconds,
+                    output_language=config.output_language,
+                ),
                 ProposalCache(args.cache),
                 prompt_version="recommendation-v1",
                 model="deepseek-v4-flash",
                 feedback_adjustments=feedback.adjustments(),
+                pre_rank_limit=config.recommendation_candidate_limit,
             )
             write_published_set(make_published_set(recommendation_set), args.output)
             print(
