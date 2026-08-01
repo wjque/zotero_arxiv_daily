@@ -9,7 +9,9 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
+from zotero_arxiv_daily.arxiv.ids import parse_arxiv_id, public_urls
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate, RetrievalCheckpoint
+from zotero_arxiv_daily.core.errors import ExternalServiceError
 
 
 class ArxivStateStore:
@@ -31,6 +33,17 @@ class ArxivStateStore:
         return (
             frozenset(str(value) for value in values) if isinstance(values, list) else frozenset()
         )
+
+    def candidates(self) -> tuple[ArxivCandidate, ...]:
+        """Read only validated public candidate metadata from the last successful retrieval."""
+
+        values = self._read().get("candidates", [])
+        if not isinstance(values, list):
+            raise ExternalServiceError("arXiv candidate state is invalid")
+        try:
+            return tuple(_candidate_from_payload(value) for value in values)
+        except (KeyError, TypeError, ValueError) as error:
+            raise ExternalServiceError("arXiv candidate state is invalid") from error
 
     def in_progress_at(self) -> datetime | None:
         """Return the non-authoritative start of an unfinished retrieval, if present."""
@@ -91,3 +104,21 @@ def _candidate_payload(candidate: ArxivCandidate) -> dict[str, object]:
     payload["published"] = candidate.published.isoformat()
     payload["updated"] = candidate.updated.isoformat()
     return payload
+
+
+def _candidate_from_payload(value: object) -> ArxivCandidate:
+    if not isinstance(value, dict):
+        raise ValueError
+    identifier = parse_arxiv_id(str(value["arxiv_id"]))
+    abstract_url, pdf_url = public_urls(identifier)
+    return ArxivCandidate(
+        identifier,
+        str(value["title"]),
+        tuple(str(item) for item in value["authors"]),
+        tuple(str(item) for item in value["categories"]),
+        datetime.fromisoformat(str(value["published"])).astimezone(UTC),
+        datetime.fromisoformat(str(value["updated"])).astimezone(UTC),
+        abstract_url,
+        pdf_url,
+        str(value["summary"]),
+    )
