@@ -12,7 +12,7 @@ from pathlib import Path
 
 from zotero_arxiv_daily.zotero.models import SyncBatch, SyncResult, ZoteroItem
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
 
 
 class ZoteroStore:
@@ -80,6 +80,49 @@ class ZoteroStore:
             ).fetchall()
         return tuple(str(row[0]) for row in rows)
 
+    def profile_sources(self) -> tuple[tuple[str, str, str, tuple[str, ...]], ...]:
+        """Return local-only seed payloads and their child signals for profile construction."""
+
+        with self._connection() as connection:
+            roots = connection.execute(
+                "SELECT key, content_hash, payload FROM items WHERE is_seed = 1 ORDER BY key"
+            ).fetchall()
+            rows: list[tuple[str, str, str, tuple[str, ...]]] = []
+            for key, content_hash, payload in roots:
+                children = connection.execute(
+                    "SELECT payload FROM items WHERE parent_key = ? AND trashed = 0 ORDER BY key",
+                    (key,),
+                ).fetchall()
+                rows.append(
+                    (
+                        str(key),
+                        str(content_hash),
+                        str(payload),
+                        tuple(str(row[0]) for row in children),
+                    )
+                )
+        return tuple(rows)
+
+    def load_digest(self, cache_key: str, prompt_version: str) -> str | None:
+        """Return a local derived digest by content hash and deterministic prompt version."""
+
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT payload FROM item_digests WHERE cache_key = ? AND prompt_version = ?",
+                (cache_key, prompt_version),
+            ).fetchone()
+        return str(row[0]) if row else None
+
+    def save_digest(self, cache_key: str, prompt_version: str, payload: str) -> None:
+        """Atomically persist only a derived digest, never raw model input."""
+
+        with self._connection() as connection, connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO item_digests "
+                "(cache_key, prompt_version, payload) VALUES (?, ?, ?)",
+                (cache_key, prompt_version, payload),
+            )
+
     @contextmanager
     def _connection(self) -> Iterator[sqlite3.Connection]:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -96,10 +139,9 @@ class ZoteroStore:
         connection.execute(
             "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)"
         )
-        if connection.execute("SELECT 1 FROM schema_migrations WHERE version = 1").fetchone():
-            return
-        connection.executescript(
-            """
+        if not connection.execute("SELECT 1 FROM schema_migrations WHERE version = 1").fetchone():
+            connection.executescript(
+                """
             CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
             CREATE TABLE items (
                 key TEXT PRIMARY KEY, version INTEGER NOT NULL, item_type TEXT NOT NULL,
@@ -115,9 +157,17 @@ class ZoteroStore:
                 FOREIGN KEY (item_key) REFERENCES items(key) ON DELETE CASCADE
             );
             CREATE INDEX item_parent_index ON items(parent_key);
-            """
-        )
-        connection.execute("INSERT INTO schema_migrations (version) VALUES (?)", (_SCHEMA_VERSION,))
+                """
+            )
+            connection.execute("INSERT INTO schema_migrations (version) VALUES (1)")
+        if not connection.execute("SELECT 1 FROM schema_migrations WHERE version = 2").fetchone():
+            connection.execute(
+                "CREATE TABLE item_digests (cache_key TEXT NOT NULL, prompt_version TEXT NOT NULL, "
+                "payload TEXT NOT NULL, PRIMARY KEY (cache_key, prompt_version))"
+            )
+            connection.execute(
+                "INSERT INTO schema_migrations (version) VALUES (?)", (_SCHEMA_VERSION,)
+            )
 
     def _write_items(
         self, connection: sqlite3.Connection, items: tuple[ZoteroItem, ...]

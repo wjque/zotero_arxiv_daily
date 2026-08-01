@@ -12,6 +12,12 @@ from zotero_arxiv_daily import __version__
 from zotero_arxiv_daily.core.config import load_config
 from zotero_arxiv_daily.core.errors import ApplicationError
 from zotero_arxiv_daily.doctor import Diagnostic, doctor_exit_code, run_doctor
+from zotero_arxiv_daily.profile.export import write_remote_profile
+from zotero_arxiv_daily.profile.service import (
+    build_cached_remote_profile,
+    publish_github_secret,
+    read_remote_profile,
+)
 from zotero_arxiv_daily.zotero.client import ZoteroLocalClient
 from zotero_arxiv_daily.zotero.storage import ZoteroStore
 from zotero_arxiv_daily.zotero.sync import synchronize
@@ -41,6 +47,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--database", type=Path, help="Override the local SQLite database path"
     )
     sync_parser.add_argument("--format", choices=("text", "json"), default="text")
+    build_parser = profile_commands.add_parser("build", help="Build a local interest profile")
+    build_parser.add_argument(
+        "--database", type=Path, help="Override the local SQLite database path"
+    )
+    build_parser.add_argument("--output", type=Path, default=Path("runtime/remote-profile.json"))
+    build_parser.add_argument("--payload-budget", type=int, default=30 * 1024)
+    publish_parser = profile_commands.add_parser(
+        "publish-github", help="Publish a protected profile through gh"
+    )
+    publish_parser.add_argument("--input", type=Path, default=Path("runtime/remote-profile.json"))
+    publish_parser.add_argument("--secret-name", default="ZOTERO_ARXIV_DAILY_PROFILE")
     return parser
 
 
@@ -69,6 +86,24 @@ def main(argv: Sequence[str] | None = None) -> int:
                     f"{result.mode} sync complete: {result.items_written} written, "
                     f"{result.items_unchanged} unchanged, {result.items_deleted} deleted"
                 )
+            return 0
+        if args.command == "profile" and args.profile_command == "build":
+            store = ZoteroStore(args.database or Path(config.local_database_path))
+            remote, cache_hits = build_cached_remote_profile(store, args.payload_budget)
+            write_remote_profile(remote, args.output)
+            print(
+                "profile exported: "
+                f"{len(remote.topics)} topics, {len(remote.core_categories)} categories, "
+                f"{cache_hits} cache hits"
+            )
+            return 0
+        if args.command == "profile" and args.profile_command == "publish-github":
+            if not config.github_repository:
+                raise ApplicationError("set ZAD_GITHUB_REPOSITORY before publishing a profile")
+            publish_github_secret(
+                read_remote_profile(args.input), config.github_repository, args.secret_name
+            )
+            print("protected profile published to GitHub Secret")
             return 0
     except ApplicationError as error:
         print(f"configuration error: {error}")
