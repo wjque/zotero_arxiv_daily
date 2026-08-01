@@ -18,6 +18,8 @@ from zotero_arxiv_daily.profile.service import (
     publish_github_secret,
     read_remote_profile,
 )
+from zotero_arxiv_daily.site.build import build_site
+from zotero_arxiv_daily.site.models import read_published_set
 from zotero_arxiv_daily.zotero.client import ZoteroLocalClient
 from zotero_arxiv_daily.zotero.storage import ZoteroStore
 from zotero_arxiv_daily.zotero.sync import synchronize
@@ -58,6 +60,15 @@ def build_parser() -> argparse.ArgumentParser:
     )
     publish_parser.add_argument("--input", type=Path, default=Path("runtime/remote-profile.json"))
     publish_parser.add_argument("--secret-name", default="ZOTERO_ARXIV_DAILY_PROFILE")
+    site_parser = subcommands.add_parser("site", help="Build the static recommendation site")
+    site_commands = site_parser.add_subparsers(dest="site_command", required=True)
+    site_build_parser = site_commands.add_parser(
+        "build", help="Build encrypted or public static output"
+    )
+    site_build_parser.add_argument(
+        "--input", type=Path, default=Path("runtime/publishable-recommendations.json")
+    )
+    site_build_parser.add_argument("--output", type=Path, default=Path("runtime/site"))
     return parser
 
 
@@ -104,6 +115,17 @@ def main(argv: Sequence[str] | None = None) -> int:
                 read_remote_profile(args.input), config.github_repository, args.secret_name
             )
             print("protected profile published to GitHub Secret")
+            return 0
+        if args.command == "site" and args.site_command == "build":
+            site_result = build_site(
+                read_published_set(args.input),
+                args.output,
+                public_output=config.public_output,
+                passphrase=config.pages_passphrase,
+                feedback_repository=config.github_repository,
+            )
+            mode = "public" if not site_result.encrypted else "encrypted"
+            print(f"{mode} site built: {site_result.recommendation_count} recommendations")
             return 0
     except ApplicationError as error:
         print(f"configuration error: {error}")

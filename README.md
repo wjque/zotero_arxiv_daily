@@ -4,9 +4,8 @@ Zotero arXiv Daily is a local-first tool that builds a compact interest profile 
 Zotero library and uses it to produce a daily arXiv reading list. Raw Zotero records,
 notes, annotations, and PDF content remain local.
 
-The project has completed the local Zotero synchronization milestone of v0.1.0.
-Implemented commands are `doctor` and `profile sync`; profile export and recommendation
-commands will be added in later milestones of the active
+The project has completed the local profile, arXiv retrieval, recommendation, and static-site
+milestones of v0.1.0. GitHub automation and release hardening remain in the active
 [v0.1.0 plan](docs/plans/v0.1.0-initial-mvp.md).
 
 ## Requirements
@@ -73,10 +72,19 @@ uv run zotero-arxiv-daily profile publish-github
 
 ## Current status and operation
 
-The current release plan, operating assumptions, recovery design, and later command
-surface are documented in [the v0.1.0 plan](docs/plans/v0.1.0-initial-mvp.md). No
-recommendation workflow, external-model call, Pages deployment, or data publication is
-implemented yet. Raw Zotero content stays in the ignored local SQLite database.
+Build static output from validated publishable recommendations with the default protected mode:
+
+```bash
+export ZAD_PAGES_PASSPHRASE='use-a-strong-passphrase-of-at-least-16-characters'
+uv run zotero-arxiv-daily site build
+```
+
+The builder expects `runtime/publishable-recommendations.json`, creates encrypted static data in
+`runtime/site`, and prompts for the passphrase only in the browser. To knowingly make generated
+recommendations public, set `ZAD_PUBLIC_OUTPUT=true` and leave `ZAD_PAGES_PASSPHRASE` unset.
+The site stores feedback only in browser local storage and opens one prefilled GitHub Issue after
+an explicit user action; it contains no browser token. Raw Zotero content stays in the ignored
+local SQLite database.
 
 ## Quality checks
 
