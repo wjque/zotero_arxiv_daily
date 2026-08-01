@@ -52,6 +52,25 @@ content. Override the storage location with `--database PATH` or `ZAD_LOCAL_DATA
 Stop or retry an interrupted sync normally: the SQLite transaction retains the previous usable
 state until the new batch is valid and complete.
 
+Build a compact local remote-profile candidate after synchronization:
+
+```bash
+uv run zotero-arxiv-daily profile build
+```
+
+It writes `runtime/remote-profile.json` with owner-only permissions. The export contains only
+bounded topic terms and inferred arXiv categories; it excludes titles, abstracts, notes,
+annotations, identifiers, collections, and matching evidence. Unchanged local inputs reuse
+derived digest cache entries rather than regenerating them.
+
+To publish a validated exported profile to a GitHub Actions Secret, authenticate `gh` locally and
+set `ZAD_GITHUB_REPOSITORY`; the profile JSON is sent on standard input rather than in command-line
+arguments:
+
+```bash
+uv run zotero-arxiv-daily profile publish-github
+```
+
 ## Current status and operation
 
 The current release plan, operating assumptions, recovery design, and later command
