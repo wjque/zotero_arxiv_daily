@@ -42,6 +42,15 @@ def test_model_output_cannot_introduce_unknown_fields_or_ids() -> None:
             '[{"arxiv_id":"2401.00001","quality":1,"summary":"x","reason":"x","url":"bad"}]',
             frozenset({"2401.00001"}),
         )
+
+
+def test_model_output_normalizes_an_allowed_arxiv_identifier() -> None:
+    proposals = parse_proposals(
+        '[{"arxiv_id":"arXiv:2401.00001v2","quality":1,"summary":"x","reason":"x"}]',
+        frozenset({"2401.00001"}),
+    )
+
+    assert proposals[0].arxiv_id == "2401.00001"
     with pytest.raises(ExternalServiceError, match="outside"):
         parse_proposals(
             '[{"arxiv_id":"9999.99999","quality":1,"summary":"x","reason":"x"}]',

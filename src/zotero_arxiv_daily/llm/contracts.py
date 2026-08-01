@@ -5,7 +5,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 
-from zotero_arxiv_daily.core.errors import ExternalServiceError
+from zotero_arxiv_daily.arxiv.ids import parse_arxiv_id
+from zotero_arxiv_daily.core.errors import ConfigurationError, ExternalServiceError
 
 
 @dataclass(frozen=True, slots=True)
@@ -32,10 +33,19 @@ def parse_proposals(payload: str, allowed_ids: frozenset[str]) -> tuple[ModelPro
         identifier, quality, summary, reason = item.values()
         if (
             not isinstance(identifier, str)
-            or identifier not in allowed_ids
             or not isinstance(quality, (int, float))
             or not 0 <= quality <= 1
         ):
+            raise ExternalServiceError(
+                "model proposal is invalid or outside the requested candidates"
+            )
+        try:
+            canonical_id = parse_arxiv_id(identifier).canonical
+        except ConfigurationError as error:
+            raise ExternalServiceError(
+                "model proposal is invalid or outside the requested candidates"
+            ) from error
+        if canonical_id not in allowed_ids:
             raise ExternalServiceError(
                 "model proposal is invalid or outside the requested candidates"
             )
@@ -46,7 +56,7 @@ def parse_proposals(payload: str, allowed_ids: frozenset[str]) -> tuple[ModelPro
             or len(reason) > 400
         ):
             raise ExternalServiceError("model proposal text exceeds bounds")
-        proposals.append(ModelProposal(identifier, float(quality), summary, reason))
+        proposals.append(ModelProposal(canonical_id, float(quality), summary, reason))
     proposal_ids = frozenset(proposal.arxiv_id for proposal in proposals)
     if len(proposal_ids) != len(proposals):
         raise ExternalServiceError("model response contains duplicate candidates")
