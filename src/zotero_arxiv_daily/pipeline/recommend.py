@@ -167,5 +167,5 @@ def _model_candidate(candidate: ArxivCandidate) -> dict[str, object]:
         "authors": list(candidate.authors[:10]),
         "categories": list(candidate.categories[:10]),
         "published": candidate.published.isoformat(),
-        "summary": candidate.summary[:3_000],
+        "summary": candidate.summary[:400],
     }
