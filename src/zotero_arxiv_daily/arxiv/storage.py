@@ -37,7 +37,11 @@ class ArxivStateStore:
     def candidates(self) -> tuple[ArxivCandidate, ...]:
         """Read only validated public candidate metadata from the last successful retrieval."""
 
-        values = self._read().get("candidates", [])
+        payload = self._read()
+        schema_version = payload.get("schema_version", 1)
+        if schema_version not in {1, 2}:
+            raise ExternalServiceError("arXiv candidate state uses an unsupported schema")
+        values = payload.get("candidates", [])
         if not isinstance(values, list):
             raise ExternalServiceError("arXiv candidate state is invalid")
         try:
@@ -70,7 +74,7 @@ class ArxivStateStore:
         )
         seen.update(candidate.arxiv_id.canonical for candidate in candidates)
         payload = {
-            "schema_version": 1,
+            "schema_version": 2,
             "checkpoint": checkpoint.completed_at.isoformat(),
             "seen_ids": sorted(seen),
             "candidates": [_candidate_payload(candidate) for candidate in candidates],
@@ -111,6 +115,11 @@ def _candidate_from_payload(value: object) -> ArxivCandidate:
         raise ValueError
     identifier = parse_arxiv_id(str(value["arxiv_id"]))
     abstract_url, pdf_url = public_urls(identifier)
+    affiliations = value.get("affiliations", [])
+    if not isinstance(affiliations, list) or not all(
+        isinstance(item, str) for item in affiliations
+    ):
+        raise ValueError
     return ArxivCandidate(
         identifier,
         str(value["title"]),
@@ -121,4 +130,5 @@ def _candidate_from_payload(value: object) -> ArxivCandidate:
         abstract_url,
         pdf_url,
         str(value["summary"]),
+        tuple(affiliations),
     )

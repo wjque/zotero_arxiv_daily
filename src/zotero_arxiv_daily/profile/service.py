@@ -12,7 +12,13 @@ from typing import Protocol
 
 from zotero_arxiv_daily.core.errors import ConfigurationError, ExternalServiceError
 from zotero_arxiv_daily.profile.build import build_profile, make_digest, project_remote
-from zotero_arxiv_daily.profile.models import InterestProfile, ItemDigest, RemoteProfile
+from zotero_arxiv_daily.profile.models import (
+    REMOTE_PROFILE_SCHEMA_VERSION,
+    InterestProfile,
+    ItemDigest,
+    RemoteProfile,
+    WatchedIdentity,
+)
 from zotero_arxiv_daily.zotero.storage import ZoteroStore
 
 _PROMPT_VERSION = "deterministic-digest-v1"
@@ -34,7 +40,11 @@ class GhRunner:
 
 
 def build_cached_remote_profile(
-    store: ZoteroStore, payload_budget: int = 30 * 1024
+    store: ZoteroStore,
+    payload_budget: int = 30 * 1024,
+    *,
+    watched_authors: tuple[WatchedIdentity, ...] = (),
+    watched_institutions: tuple[WatchedIdentity, ...] = (),
 ) -> tuple[RemoteProfile, int]:
     """Build only changed local digests and return an allowlisted remote projection."""
 
@@ -66,7 +76,13 @@ def build_cached_remote_profile(
             digests, key=lambda item: (item.year is None, item.year, item.item_key), reverse=True
         )[:8]
     )
-    remote = replace(remote, representative_papers=representatives)
+    remote = replace(
+        remote,
+        schema_version=REMOTE_PROFILE_SCHEMA_VERSION,
+        representative_papers=representatives,
+        watched_authors=watched_authors,
+        watched_institutions=watched_institutions,
+    )
     _enforce_budget(remote, payload_budget)
     return remote, cache_hits
 
@@ -78,7 +94,7 @@ def read_remote_profile(path: Path, payload_budget: int = 30 * 1024) -> RemotePr
         value = json.loads(path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ConfigurationError("remote profile file is unreadable") from error
-    if not isinstance(value, dict) or set(value) != {
+    v1_fields = {
         "schema_version",
         "source_library_version",
         "topics",
@@ -86,25 +102,41 @@ def read_remote_profile(path: Path, payload_budget: int = 30 * 1024) -> RemotePr
         "adjacent_categories",
         "representative_terms",
         "representative_papers",
+    }
+    v2_fields = v1_fields | {"watched_authors", "watched_institutions"}
+    if not isinstance(value, dict) or frozenset(value) not in {
+        frozenset(v1_fields),
+        frozenset(v2_fields),
     }:
         raise ConfigurationError("remote profile contains unsupported fields")
     try:
+        schema_version = int(value["schema_version"])
+        if schema_version == 1 and set(value) != v1_fields:
+            raise ValueError
+        if schema_version == REMOTE_PROFILE_SCHEMA_VERSION and set(value) != v2_fields:
+            raise ValueError
         profile = RemoteProfile(
-            int(value["schema_version"]),
+            schema_version,
             int(value["source_library_version"]),
-            tuple(str(item) for item in value["topics"]),
-            tuple(str(item) for item in value["core_categories"]),
-            tuple(str(item) for item in value["adjacent_categories"]),
-            tuple(str(item) for item in value["representative_terms"]),
+            _string_tuple(value["topics"]),
+            _string_tuple(value["core_categories"]),
+            _string_tuple(value["adjacent_categories"]),
+            _string_tuple(value["representative_terms"]),
             tuple(
-                (item[0], tuple(item[1]), tuple(item[2])) for item in value["representative_papers"]
+                (item[0], _string_tuple(item[1]), _string_tuple(item[2]))
+                for item in value["representative_papers"]
             ),
+            _watched_identities(value.get("watched_authors", [])),
+            _watched_identities(value.get("watched_institutions", [])),
         )
     except (KeyError, TypeError, ValueError, IndexError) as error:
         raise ConfigurationError("remote profile schema is invalid") from error
     validated = replace(
         project_remote(profile_to_interest(profile), payload_budget),
+        schema_version=REMOTE_PROFILE_SCHEMA_VERSION,
         representative_papers=profile.representative_papers,
+        watched_authors=profile.watched_authors,
+        watched_institutions=profile.watched_institutions,
     )
     _enforce_budget(validated, payload_budget)
     return validated
@@ -158,3 +190,25 @@ def _enforce_budget(profile: RemoteProfile, payload_budget: int) -> None:
         raise ConfigurationError(
             f"remote profile is {size} bytes; budget is {payload_budget} bytes"
         )
+
+
+def _watched_identities(value: object) -> tuple[WatchedIdentity, ...]:
+    if not isinstance(value, list):
+        raise ValueError
+    identities: list[WatchedIdentity] = []
+    for entry in value:
+        if not isinstance(entry, dict) or set(entry) != {"name", "aliases"}:
+            raise ValueError
+        aliases = entry["aliases"]
+        if not isinstance(entry["name"], str) or not isinstance(aliases, list):
+            raise ValueError
+        if not all(isinstance(alias, str) for alias in aliases):
+            raise ValueError
+        identities.append(WatchedIdentity(entry["name"], tuple(aliases)))
+    return tuple(identities)
+
+
+def _string_tuple(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError
+    return tuple(value)

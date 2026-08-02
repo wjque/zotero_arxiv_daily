@@ -23,6 +23,7 @@ class ArxivCandidate:
     abstract_url: str
     pdf_url: str
     summary: str
+    affiliations: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

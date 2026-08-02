@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.1.1 - Unreleased
+
+### Added
+
+- Inspectable generation, artifact, profile-library, and successful workflow-run metadata with
+  `Asia/Shanghai` presentation and stale-batch indication.
+- Bounded watched-author and watched-institution preferences, exact local matching, optional arXiv
+  affiliation parsing, and capped inspectable ranking signals.
+- Versioned successful-recommendation history with 14-day repeat suppression and 30-day retention.
+- English and Simplified Chinese static-site labels, responsive cards, automatic light/dark color
+  support, accessible interaction states, and explicit asset-size budgets.
+
+### Changed
+
+- Scheduled generation now targets `18:30 Asia/Shanghai`; delayed scheduled runs skip model calls,
+  and peak-time manual runs require an explicit override.
+- Production Actions use reviewed immutable Node.js 24-compatible revisions.
+- New profile, arXiv-state, recommendation, and publishable output use their v0.1.1 schemas while
+  retaining named v0.1.0 compatibility readers.
+
+### Fixed
+
+- Paper dates are converted to `Asia/Shanghai` before calendar-date filtering.
+- Failed, skipped, or partially deployed runs no longer advance recommendation history.
+
+### Security
+
+- Watchlists remain in the protected profile and never enter model prompts; browser artifacts
+  expose only a bounded match outcome when applicable.
+- Artifact inspection now covers generated site assets, private-field patterns, local paths, and
+  per-asset size limits.
+
 ## v0.1.0 - 2026-08-01
 
 ### Added

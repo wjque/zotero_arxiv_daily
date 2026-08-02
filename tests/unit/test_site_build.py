@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import gzip
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -72,3 +73,42 @@ def test_publishable_input_round_trip_rejects_internal_record_fields(tmp_path: P
     loaded = read_published_set(path)
 
     assert loaded == original
+
+
+def test_schema_v2_uses_shanghai_date_and_self_contained_accessible_assets(
+    tmp_path: Path,
+) -> None:
+    result = _recommendations()
+    candidate = result.recommendations[0].candidate
+    local_midnight_candidate = ArxivCandidate(
+        candidate.arxiv_id,
+        candidate.title,
+        candidate.authors,
+        candidate.categories,
+        datetime(2026, 8, 1, 16, 1, tzinfo=UTC),
+        candidate.updated,
+        candidate.abstract_url,
+        candidate.pdf_url,
+        candidate.summary,
+    )
+    record = RecommendationRecord(
+        local_midnight_candidate, 3, "core", 0.8, "Summary", "Reason", ("watched_author",)
+    )
+    current = RecommendationSet(
+        2, 9, result.generation_started_at, (record,), result.generation_started_at
+    )
+    published = make_published_set(current, profile_schema_version=2, output_language="zh-CN")
+    output = tmp_path / "site"
+
+    build_site(published, output, public_output=True, passphrase=None)
+
+    assert published.recommendations[0].published_on == "2026-08-02"
+    css = (output / "assets/site.css").read_text(encoding="utf-8")
+    js = (output / "assets/app.js").read_text(encoding="utf-8")
+    assert "prefers-color-scheme" in css
+    assert "prefers-reduced-motion" in css
+    assert "Asia/Shanghai" in js
+    assert len(css.encode()) <= 8_192
+    assert len(js.encode()) <= 24_576
+    assert len(gzip.compress(css.encode())) <= 3_072
+    assert len(gzip.compress(js.encode())) <= 8_192

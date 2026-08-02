@@ -9,7 +9,12 @@ from dataclasses import asdict
 from typing import Any
 
 from zotero_arxiv_daily.core.errors import ConfigurationError
-from zotero_arxiv_daily.profile.models import InterestProfile, ItemDigest, RemoteProfile
+from zotero_arxiv_daily.profile.models import (
+    REMOTE_PROFILE_SCHEMA_VERSION,
+    InterestProfile,
+    ItemDigest,
+    RemoteProfile,
+)
 
 _WORD = re.compile(r"[A-Za-z][A-Za-z0-9-]{2,31}")
 _SENSITIVE = re.compile(r"(?:sk-[A-Za-z0-9]{12,}|ghp_[A-Za-z0-9]{12,}|password|secret)", re.I)
@@ -89,7 +94,14 @@ def project_remote(profile: InterestProfile, payload_budget: int = 30 * 1024) ->
     adjacent = tuple(sorted({value for category in core for value in _ADJACENT.get(category, ())}))[
         :6
     ]
-    remote = RemoteProfile(1, profile.source_library_version, topics, core, adjacent, topics[:12])
+    remote = RemoteProfile(
+        REMOTE_PROFILE_SCHEMA_VERSION,
+        profile.source_library_version,
+        topics,
+        core,
+        adjacent,
+        topics[:12],
+    )
     encoded = json.dumps(asdict(remote), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
     if len(encoded) > payload_budget:
         raise ConfigurationError(

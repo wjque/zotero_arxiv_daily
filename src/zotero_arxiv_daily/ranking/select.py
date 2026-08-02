@@ -8,7 +8,7 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
-from zotero_arxiv_daily.profile.models import RemoteProfile
+from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity, normalize_identity
 from zotero_arxiv_daily.ranking.models import ScoredCandidate
 
 _WORDS = re.compile(r"[a-z][a-z0-9-]{2,}")
@@ -19,6 +19,10 @@ def pre_rank(
     profile: RemoteProfile,
     now: datetime,
     feedback_adjustments: Mapping[str, float] | None = None,
+    *,
+    author_bonus: float = 0.75,
+    institution_bonus: float = 0.5,
+    identity_bonus_cap: float = 1.0,
 ) -> tuple[ScoredCandidate, ...]:
     """Score public candidates locally using derived profile terms and categories."""
 
@@ -40,16 +44,31 @@ def pre_rank(
         recency = max(0.0, 1.0 - age / 14)
         source = "core" if category == 2.0 else "adjacent" if category == 1.0 else "exploration"
         feedback = (feedback_adjustments or {}).get(candidate.arxiv_id.canonical, 0.0)
+        author_match = _matches_any(candidate.authors, profile.watched_authors)
+        institution_match = _matches_any(candidate.affiliations, profile.watched_institutions)
+        watched_author = author_bonus if author_match else 0.0
+        watched_institution = institution_bonus if institution_match else 0.0
+        watched_author = min(watched_author, identity_bonus_cap)
+        watched_institution = min(
+            watched_institution, max(0.0, identity_bonus_cap - watched_author)
+        )
         components = (
             ("lexical", lexical),
             ("category", category),
             ("recency", recency),
             ("feedback", feedback),
+            ("watched_author", watched_author),
+            ("watched_institution", watched_institution),
         )
         scored.append(
             ScoredCandidate(candidate, sum(value for _, value in components), components, source)
         )
     return tuple(sorted(scored, key=lambda item: (-item.score, item.candidate.arxiv_id.canonical)))
+
+
+def _matches_any(values: tuple[str, ...], identities: tuple[WatchedIdentity, ...]) -> bool:
+    normalized_values = {normalize_identity(value) for value in values if value.strip()}
+    return any(bool(normalized_values & identity.normalized_names) for identity in identities)
 
 
 def select_diverse(

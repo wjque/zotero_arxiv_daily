@@ -19,9 +19,11 @@ def write_remote_profile(profile: RemoteProfile, path: Path) -> None:
     temporary_path = Path(temporary_name)
     try:
         with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-            json.dump(
-                asdict(profile), output, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-            )
+            payload = asdict(profile)
+            if profile.schema_version == 1:
+                payload.pop("watched_authors")
+                payload.pop("watched_institutions")
+            json.dump(payload, output, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             output.flush()
             os.fsync(output.fileno())
         os.chmod(temporary_path, 0o600)

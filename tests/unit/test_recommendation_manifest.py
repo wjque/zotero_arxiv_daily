@@ -23,7 +23,9 @@ def test_manifest_contains_only_counts_and_budget_metadata() -> None:
         estimated_tokens=30,
     )
 
-    assert result.schema_version == 1
+    assert result.schema_version == 2
+    assert result.generation_completed_at is not None
+    assert manifest.profile_library_version == 9
     assert manifest.recommendation_count == 0
     assert manifest.estimated_tokens == 30
     assert manifest.duration_seconds == 0.0
@@ -63,6 +65,31 @@ class _Provider:
                 ]
             }
         )
+
+
+class _ForbiddenProvider:
+    def propose(self, candidates: list[dict[str, object]]) -> str:
+        raise AssertionError("empty or suppressed input must not call the provider")
+
+
+def test_fully_suppressed_input_creates_empty_batch_without_model_call(tmp_path: Path) -> None:
+    profile = RemoteProfile(1, 9, ("learning",), ("cs.LG",), (), ())
+    now = datetime(2026, 8, 1, tzinfo=UTC)
+
+    result, manifest = run_recommendation(
+        (_candidate("2401.00001"),),
+        profile,
+        now,
+        _ForbiddenProvider(),
+        ProposalCache(tmp_path / "proposals.json"),
+        prompt_version="v1",
+        model="deepseek-v4-flash",
+        excluded_ids=frozenset({"2401.00001"}),
+        completed_at=now,
+    )
+
+    assert result.recommendations == ()
+    assert manifest.model_requests == 0
 
 
 def test_recommendation_run_reuses_validated_cache_and_excludes_known_papers(
