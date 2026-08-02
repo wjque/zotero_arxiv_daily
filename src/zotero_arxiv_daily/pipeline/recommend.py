@@ -16,6 +16,8 @@ from zotero_arxiv_daily.llm.cache import ProposalCache
 from zotero_arxiv_daily.llm.contracts import ModelProposal, parse_proposals
 from zotero_arxiv_daily.profile.models import RemoteProfile
 from zotero_arxiv_daily.ranking.models import (
+    RECOMMENDATION_RUN_MANIFEST_SCHEMA_VERSION,
+    RECOMMENDATION_SET_SCHEMA_VERSION,
     RecommendationRecord,
     RecommendationRunManifest,
     RecommendationSet,
@@ -95,7 +97,7 @@ def package_result(
     completion = (completed_at or now).astimezone(UTC)
     started_at = now.astimezone(UTC)
     result = RecommendationSet(
-        2,
+        RECOMMENDATION_SET_SCHEMA_VERSION,
         profile.source_library_version,
         started_at,
         records,
@@ -103,7 +105,7 @@ def package_result(
         profile.source_library_synced_at,
     )
     manifest = RecommendationRunManifest(
-        1,
+        RECOMMENDATION_RUN_MANIFEST_SCHEMA_VERSION,
         model,
         candidate_count,
         len(records),

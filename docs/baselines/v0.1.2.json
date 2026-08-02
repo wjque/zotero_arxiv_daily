@@ -1,0 +1,104 @@
+{
+  "schema_version": 1,
+  "baseline_version": "v0.1.2",
+  "application_version": "0.1.2",
+  "release": {
+    "verified_source_revision": "8ed8627eda60c113dd560384f84c9f3c8fd842a9",
+    "release_commit": "423c05782fac4ebc9e33ac9da76f8235de84c963",
+    "tag": "v0.1.2",
+    "release_url": "https://github.com/wjque/zotero_arxiv_daily/releases/tag/v0.1.2",
+    "status": "published"
+  },
+  "ranking": {
+    "adapter": "zotero_arxiv_daily.ranking.baseline",
+    "component_order": [
+      "lexical",
+      "category",
+      "recency",
+      "feedback",
+      "watched_author",
+      "watched_institution"
+    ],
+    "category_scores": {
+      "core": 2.0,
+      "adjacent": 1.0,
+      "exploration": 0.25
+    },
+    "recency_window_days": 14,
+    "minimum_score": 1.0,
+    "target": 20,
+    "source_quotas": {
+      "core": 14,
+      "adjacent": 4,
+      "exploration": 2
+    },
+    "author_bonus": 0.75,
+    "institution_bonus": 0.5,
+    "identity_bonus_cap": 1.0,
+    "author_repetition_limit": 2,
+    "title_jaccard_rejection_threshold": 0.8,
+    "ordering": [
+      "score_desc",
+      "quality_desc",
+      "updated_desc",
+      "arxiv_id_asc"
+    ]
+  },
+  "model": {
+    "provider": "deepseek",
+    "name": "deepseek-v4-flash",
+    "prompt_namespace": "recommendation-v2:en",
+    "rendered_system_prompt_sha256": "d7622b2fca77a56417be9dfc21660b8854e5a62ed77bebfd2df6a3ff6354f2ea",
+    "characterization_cache_key_sha256": "f44f4f0e90b220528596d2f2bfe2b546f7e3d8133376fac69023dfcbade5086b",
+    "candidate_limit": 40,
+    "batch_size": 40,
+    "batch_slots": 2,
+    "validation_retries": 1,
+    "estimated_input_token_budget": 12000,
+    "provider_output_token_limit": 12000,
+    "timeout_seconds": 60.0,
+    "output_language": "en",
+    "cost_estimator_configured": false
+  },
+  "schemas": {
+    "zotero_store": 2,
+    "item_digest": 1,
+    "interest_profile": 1,
+    "remote_profile": 3,
+    "arxiv_candidate_pool": 3,
+    "feedback_state": 1,
+    "recommendation_history": 1,
+    "recommendation_set": 2,
+    "run_manifest": 1,
+    "publishable_site": 3,
+    "encryption_envelope": 1
+  },
+  "production_observation": {
+    "run_id": 30750247331,
+    "run_url": "https://github.com/wjque/zotero_arxiv_daily/actions/runs/30750247331",
+    "source_revision": "8ed8627eda60c113dd560384f84c9f3c8fd842a9",
+    "started_at": "2026-08-02T13:35:16Z",
+    "completed_at": "2026-08-02T13:35:58Z",
+    "candidate_pool_count": 998,
+    "eligible_candidate_count": 918,
+    "shortlist_candidate_count": 40,
+    "shortlist_source_counts": {
+      "core": 40,
+      "adjacent": 0,
+      "exploration": 0
+    },
+    "cached_proposal_count": 20,
+    "model_candidate_count": 20,
+    "model_request_count": 1,
+    "estimated_input_tokens": 3491,
+    "estimated_cost_usd": 0.0,
+    "recommendation_count": 20,
+    "workflow_job_duration_seconds": 42,
+    "retrieval_complete_to_recommendations_seconds": 12.316,
+    "measurement_notes": [
+      "The input-token estimate was reproduced from the pre-run protected state and the allowlisted candidate projection without recording candidate text or private profile fields.",
+      "The zero estimated cost reflects the v0.1.2 CLI's unconfigured cost estimator and is not an actual provider-billing measurement.",
+      "The recommendation latency is derived from adjacent GitHub Actions log timestamps because the private run manifest was not retained as a release artifact."
+    ]
+  }
+}
