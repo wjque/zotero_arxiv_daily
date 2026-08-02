@@ -24,6 +24,8 @@
 
 - Paper dates are converted to `Asia/Shanghai` before calendar-date filtering.
 - Failed, skipped, or partially deployed runs no longer advance recommendation history.
+- Empty incremental arXiv windows retain a bounded pool of recent, unexpired candidates so daily
+  recommendations can fall back to historical papers not present in successful-publication history.
 
 ### Security
 

@@ -51,24 +51,26 @@ def test_client_retries_only_transient_transport_failures() -> None:
 class CandidateClient:
     def __init__(self, pages: list[tuple[ArxivCandidate, ...] | Exception]) -> None:
         self.pages = pages
+        self.search_queries: list[str] = []
 
     def query(self, search_query: str, start: int, maximum: int) -> tuple[ArxivCandidate, ...]:
+        self.search_queries.append(search_query)
         value = self.pages.pop(0)
         if isinstance(value, Exception):
             raise value
         return value
 
 
-def _candidate(revision: int, updated: datetime) -> ArxivCandidate:
+def _candidate(revision: int, updated: datetime, identifier: str = "2401.01234") -> ArxivCandidate:
     return ArxivCandidate(
-        ArxivId("2401.01234", revision),
+        ArxivId(identifier, revision),
         "Paper",
         (),
         ("cs.LG",),
         updated,
         updated,
-        "https://arxiv.org/abs/2401.01234",
-        "https://arxiv.org/pdf/2401.01234",
+        f"https://arxiv.org/abs/{identifier}",
+        f"https://arxiv.org/pdf/{identifier}",
         "summary",
     )
 
@@ -125,3 +127,59 @@ def test_retrieval_paginates_until_an_short_page(tmp_path: Path) -> None:
 
     assert result.request_count == 2
     assert len(result.candidates) == 2
+
+
+def test_empty_increment_returns_retained_historical_candidate_pool(tmp_path: Path) -> None:
+    store = ArxivStateStore(tmp_path / "arxiv-state.json")
+    previous = datetime(2026, 8, 1, tzinfo=UTC)
+    historical = _candidate(1, previous)
+    store.commit(RetrievalCheckpoint(previous), (historical,))
+
+    result = retrieve(CandidateClient([()]), store, ("cs.LG",), previous + timedelta(days=1))
+
+    assert result.candidates == (historical,)
+    assert store.candidates() == (historical,)
+
+
+def test_empty_legacy_pool_triggers_bounded_seven_day_backfill(tmp_path: Path) -> None:
+    store = ArxivStateStore(tmp_path / "arxiv-state.json")
+    previous = datetime(2026, 8, 1, tzinfo=UTC)
+    store.commit(RetrievalCheckpoint(previous), ())
+    now = previous + timedelta(days=1)
+    client = CandidateClient([(_candidate(1, previous),)])
+
+    result = retrieve(client, store, ("cs.LG",), now)
+
+    assert "submittedDate:[202607260000 TO 202608020000]" in client.search_queries[0]
+    assert len(result.candidates) == 1
+
+
+def test_candidate_pool_keeps_newest_revision_and_prunes_expired_entries(
+    tmp_path: Path,
+) -> None:
+    store = ArxivStateStore(tmp_path / "arxiv-state.json")
+    started = datetime(2026, 7, 1, tzinfo=UTC)
+    original = _candidate(1, started)
+    revised = _candidate(2, started + timedelta(days=1))
+    store.commit(RetrievalCheckpoint(started), (original,))
+    store.commit(RetrievalCheckpoint(started + timedelta(days=1)), (revised,))
+
+    assert store.candidates()[0].arxiv_id.revision == 2
+
+    store.commit(RetrievalCheckpoint(started + timedelta(days=32)), ())
+    assert store.candidates() == ()
+
+
+def test_candidate_pool_is_bounded_to_newest_thousand_entries(tmp_path: Path) -> None:
+    store = ArxivStateStore(tmp_path / "arxiv-state.json")
+    now = datetime(2026, 8, 1, tzinfo=UTC)
+    candidates = tuple(
+        _candidate(1, now + timedelta(seconds=index), f"2401.{index:05d}") for index in range(1001)
+    )
+
+    store.commit(RetrievalCheckpoint(now + timedelta(seconds=1001)), candidates)
+
+    retained = store.candidates()
+    assert len(retained) == 1000
+    assert retained[0].arxiv_id.canonical == "2401.01000"
+    assert all(item.arxiv_id.canonical != "2401.00000" for item in retained)

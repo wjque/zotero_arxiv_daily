@@ -143,9 +143,12 @@ local SQLite database.
 Published batches display generation start/completion, artifact build time, Zotero library version,
 and a validated link to the successful GitHub workflow run in `Asia/Shanghai`. Data older than 36
 hours is marked stale. Successfully deployed canonical arXiv IDs are suppressed for 14 days by
-default; history is prepared during generation and promoted to the protected `state` branch only
-after Pages deployment succeeds. Existing v0.1.0 profiles, arXiv state, and publishable payloads
-remain readable; rebuilding and republishing the profile activates schema-v2 watchlists.
+default. Public candidate metadata is retained for 30 days in a bounded 1,000-paper pool, allowing
+an empty incremental retrieval to fall back to recent papers that are absent from successful-
+publication history. An empty legacy pool receives one bounded seven-day backfill. History is
+prepared during generation and promoted to the protected `state` branch only after Pages deployment
+succeeds. Existing v0.1.0 profiles, arXiv state, and publishable payloads remain readable; rebuilding
+and republishing the profile activates schema-v2 watchlists.
 
 ## Quality checks
 
