@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
 import pytest
@@ -8,7 +9,8 @@ from zotero_arxiv_daily.arxiv.models import ArxivCandidate, ArxivId
 from zotero_arxiv_daily.core.errors import ExternalServiceError
 from zotero_arxiv_daily.llm.contracts import parse_proposals
 from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity
-from zotero_arxiv_daily.ranking.select import pre_rank, select_diverse
+from zotero_arxiv_daily.ranking.models import RecommendationRecord
+from zotero_arxiv_daily.ranking.select import order_recommendations, pre_rank, select_diverse
 
 
 def _candidate(identifier: str, category: str, title: str, age: int = 1) -> ArxivCandidate:
@@ -152,3 +154,47 @@ def test_watched_author_substring_does_not_match() -> None:
         ]
         == 0
     )
+
+
+def test_final_order_is_relevance_first_then_quality_and_stable_ties() -> None:
+    first = RecommendationRecord(
+        _candidate("2401.00003", "cs.LG", "Learning", age=3), 4.0, "core", 0.5, "x", "x"
+    )
+    second = RecommendationRecord(
+        _candidate("2401.00002", "cs.LG", "Learning", age=2), 4.0, "core", 0.9, "x", "x"
+    )
+    third = RecommendationRecord(
+        _candidate("2401.00001", "cs.LG", "Learning", age=1), 3.0, "core", 1.0, "x", "x"
+    )
+    fourth = RecommendationRecord(
+        replace(
+            _candidate("2401.00004", "cs.LG", "Learning", age=2),
+            updated=datetime(2026, 8, 2, tzinfo=UTC),
+        ),
+        4.0,
+        "core",
+        0.9,
+        "x",
+        "x",
+    )
+    fifth = RecommendationRecord(
+        replace(
+            _candidate("2401.00005", "cs.LG", "Learning", age=2),
+            updated=datetime(2026, 8, 2, tzinfo=UTC),
+        ),
+        4.0,
+        "core",
+        0.9,
+        "x",
+        "x",
+    )
+
+    ordered = order_recommendations((first, second, third, fifth, fourth))
+
+    assert [record.candidate.arxiv_id.canonical for record in ordered] == [
+        "2401.00004",
+        "2401.00005",
+        "2401.00002",
+        "2401.00003",
+        "2401.00001",
+    ]

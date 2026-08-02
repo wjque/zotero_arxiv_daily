@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
 from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity, normalize_identity
-from zotero_arxiv_daily.ranking.models import ScoredCandidate
+from zotero_arxiv_daily.ranking.models import RecommendationRecord, ScoredCandidate
 
 _WORDS = re.compile(r"[a-z][a-z0-9-]{2,}")
 
@@ -95,6 +95,28 @@ def select_diverse(
         if item not in selected and _diverse(item, authors, topic_sets):
             _append(item, selected, authors, topic_sets)
     return tuple(selected[:target])
+
+
+def order_recommendations(
+    records: tuple[RecommendationRecord, ...],
+) -> tuple[RecommendationRecord, ...]:
+    """Order selected records for reading without changing selection policy.
+
+    Local relevance remains the primary signal. Validated model quality only refines that
+    policy-approved ordering; updated time and canonical ID make otherwise equal records stable.
+    """
+
+    return tuple(
+        sorted(
+            records,
+            key=lambda record: (
+                -record.score,
+                -record.quality,
+                -record.candidate.updated.timestamp(),
+                record.candidate.arxiv_id.canonical,
+            ),
+        )
+    )
 
 
 def _diverse(item: ScoredCandidate, authors: Counter[str], topic_sets: list[set[str]]) -> bool:
