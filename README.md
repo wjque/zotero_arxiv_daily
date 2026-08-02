@@ -4,7 +4,8 @@ Zotero arXiv Daily is a local-first tool that builds a compact interest profile 
 Zotero library and uses it to produce a daily arXiv reading list. Raw Zotero records,
 notes, annotations, and PDF content remain local.
 
-The v0.1.2 implementation adds a meaningful profile snapshot timestamp and compact batch status.
+The v0.1.2 implementation adds a meaningful profile snapshot timestamp, compact batch status, and
+deterministic recommendation ordering.
 v0.1.1 added production timing, preference signals, repeated-paper suppression, and deployment
 observability while preserving the local-first trust boundary. Current work is tracked in the
 active [v0.1.2 plan](docs/plans/v0.1.2-profile-snapshot-site-density.md).
@@ -156,6 +157,10 @@ and republishing the profile activates schema-v2 watchlists.
 The `Profile snapshot` is the time of the successful local Zotero synchronization used to build
 the protected profile. Rebuild and republish the profile after upgrading to v0.1.2 to populate this
 field; legacy protected profiles remain valid but omit it.
+
+Within a generated batch, cards are ordered by local profile relevance, then validated model quality,
+then the latest arXiv revision time and canonical ID. Candidate quotas and diversity constraints still
+determine which papers enter the batch; they do not group the reading order.
 
 ## Quality checks
 

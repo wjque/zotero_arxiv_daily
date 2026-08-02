@@ -20,7 +20,7 @@ from zotero_arxiv_daily.ranking.models import (
     RecommendationRunManifest,
     RecommendationSet,
 )
-from zotero_arxiv_daily.ranking.select import pre_rank, select_diverse
+from zotero_arxiv_daily.ranking.select import order_recommendations, pre_rank, select_diverse
 
 
 def recommend(
@@ -73,7 +73,7 @@ def recommend(
                 identity_matches,
             )
         )
-    return tuple(records)
+    return order_recommendations(tuple(records))
 
 
 def package_result(
