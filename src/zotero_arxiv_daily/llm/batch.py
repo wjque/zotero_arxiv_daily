@@ -49,15 +49,18 @@ def propose_bounded(
             requests += 1
             try:
                 content = provider.propose(batch)
+                value = json.loads(content)
+                raw = json.dumps(value["proposals"])
+                parsed = parse_proposals(raw, frozenset(str(item["arxiv_id"]) for item in batch))
+            except (KeyError, TypeError, json.JSONDecodeError) as error:
+                failure = ExternalServiceError("model response lacks proposals")
+                if attempt == retries:
+                    raise failure from error
+                continue
             except ExternalServiceError:
                 if attempt == retries:
                     raise
                 continue
             break
-        try:
-            value = json.loads(content)
-            raw = json.dumps(value["proposals"])
-        except (KeyError, TypeError, json.JSONDecodeError) as error:
-            raise ExternalServiceError("model response lacks proposals") from error
-        proposals.extend(parse_proposals(raw, frozenset(str(item["arxiv_id"]) for item in batch)))
+        proposals.extend(parsed)
     return tuple(proposals), ModelUsage(requests, 0, tokens)

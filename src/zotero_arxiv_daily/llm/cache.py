@@ -13,9 +13,18 @@ class ProposalCache:
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def key(self, arxiv_id: str, profile_version: int, prompt_version: str, model: str) -> str:
+    def key(
+        self,
+        arxiv_id: str,
+        profile_version: int,
+        prompt_version: str,
+        model: str,
+        candidate_fingerprint: str,
+    ) -> str:
         return hashlib.sha256(
-            f"{arxiv_id}\0{profile_version}\0{prompt_version}\0{model}".encode()
+            (
+                f"{arxiv_id}\0{profile_version}\0{prompt_version}\0{model}\0{candidate_fingerprint}"
+            ).encode()
         ).hexdigest()
 
     def get(self, key: str) -> str | None:

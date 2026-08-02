@@ -56,7 +56,7 @@ class AppConfig:
     github_token: str | None = None
     pages_passphrase: str | None = None
     public_output: bool = False
-    output_language: str = "zh-CN"
+    output_language: str = "en"
     watched_authors: tuple[ConfiguredIdentity, ...] = ()
     watched_institutions: tuple[ConfiguredIdentity, ...] = ()
     author_preference_bonus: float = 0.75

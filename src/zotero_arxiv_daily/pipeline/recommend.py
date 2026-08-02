@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import asdict
 from datetime import UTC, datetime
 from time import perf_counter
@@ -31,6 +32,7 @@ def recommend(
     author_bonus: float = 0.75,
     institution_bonus: float = 0.5,
     identity_bonus_cap: float = 1.0,
+    feedback_adjustments: Mapping[str, float] | None = None,
 ) -> tuple[RecommendationRecord, ...]:
     """Apply local policy after model validation; models cannot select URLs or state changes."""
 
@@ -40,6 +42,7 @@ def recommend(
             candidates,
             profile,
             now,
+            feedback_adjustments,
             author_bonus=author_bonus,
             institution_bonus=institution_bonus,
             identity_bonus_cap=identity_bonus_cap,
@@ -149,9 +152,17 @@ def run_recommendation(
         selected_candidates, profile, cache, prompt_version, model
     )
     fresh, usage = propose_bounded(provider, [_model_candidate(item) for item in missing])
+    candidates_by_id = {candidate.arxiv_id.canonical: candidate for candidate in missing}
     for proposal in fresh:
+        candidate = candidates_by_id[proposal.arxiv_id]
         cache.put(
-            cache.key(proposal.arxiv_id, profile.source_library_version, prompt_version, model),
+            cache.key(
+                proposal.arxiv_id,
+                profile.source_library_version,
+                prompt_version,
+                model,
+                _candidate_fingerprint(candidate),
+            ),
             json.dumps(asdict(proposal), ensure_ascii=False, separators=(",", ":")),
         )
     records = recommend(
@@ -162,6 +173,7 @@ def run_recommendation(
         author_bonus=author_bonus,
         institution_bonus=institution_bonus,
         identity_bonus_cap=identity_bonus_cap,
+        feedback_adjustments=feedback_adjustments,
     )
     duration_seconds = perf_counter() - started
     estimated_cost_usd = estimate_cost(usage.estimated_tokens) if estimate_cost else 0.0
@@ -191,7 +203,11 @@ def _load_cached_proposals(
     missing: list[ArxivCandidate] = []
     for candidate in candidates:
         key = cache.key(
-            candidate.arxiv_id.canonical, profile.source_library_version, prompt_version, model
+            candidate.arxiv_id.canonical,
+            profile.source_library_version,
+            prompt_version,
+            model,
+            _candidate_fingerprint(candidate),
         )
         payload = cache.get(key)
         if payload is None:
@@ -219,3 +235,13 @@ def _model_candidate(candidate: ArxivCandidate) -> dict[str, object]:
         "published": candidate.published.isoformat(),
         "summary": candidate.summary[:400],
     }
+
+
+def _candidate_fingerprint(candidate: ArxivCandidate) -> str:
+    value = {
+        **_model_candidate(candidate),
+        "revision": candidate.arxiv_id.revision,
+        "updated": candidate.updated.isoformat(),
+    }
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

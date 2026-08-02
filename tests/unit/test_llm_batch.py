@@ -27,7 +27,7 @@ def test_partial_invalid_batch_fails_without_returning_partial_proposals() -> No
     )
 
     with pytest.raises(ExternalServiceError):
-        propose_bounded(provider, candidates, batch_size=1, max_requests=2)
+        propose_bounded(provider, candidates, batch_size=1, max_requests=2, retries=0)
 
 
 def test_transient_provider_failure_retries_once_within_a_bounded_budget() -> None:
@@ -45,4 +45,18 @@ def test_transient_provider_failure_retries_once_within_a_bounded_budget() -> No
 
     _, usage = propose_bounded(RetryingProvider(), [{"arxiv_id": "2401.00001"}], retries=1)
 
+    assert usage.requests == 2
+
+
+def test_invalid_structured_response_retries_once() -> None:
+    provider = Provider(
+        [
+            "not-json",
+            '{"proposals":[{"arxiv_id":"2401.00001","quality":1,"summary":"s","reason":"r"}]}',
+        ]
+    )
+
+    proposals, usage = propose_bounded(provider, [{"arxiv_id": "2401.00001"}], retries=1)
+
+    assert proposals[0].arxiv_id == "2401.00001"
     assert usage.requests == 2

@@ -108,6 +108,10 @@ def test_schema_v2_uses_shanghai_date_and_self_contained_accessible_assets(
     assert "prefers-color-scheme" in css
     assert "prefers-reduced-motion" in css
     assert "Asia/Shanghai" in js
+    assert "Not interested" in js
+    assert "Save for later" in js
+    assert "zh-CN" not in js
+    assert not any("\u4e00" <= character <= "\u9fff" for character in js)
     assert len(css.encode()) <= 8_192
     assert len(js.encode()) <= 24_576
     assert len(gzip.compress(css.encode())) <= 3_072
