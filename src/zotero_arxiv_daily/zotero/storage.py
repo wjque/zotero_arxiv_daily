@@ -8,6 +8,7 @@ import sqlite3
 from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 
 from zotero_arxiv_daily.zotero.models import SyncBatch, SyncResult, ZoteroItem
@@ -21,10 +22,13 @@ class ZoteroStore:
     def __init__(self, path: Path) -> None:
         self.path = path
 
-    def apply(self, batch: SyncBatch) -> SyncResult:
+    def apply(self, batch: SyncBatch, *, synced_at: datetime | None = None) -> SyncResult:
         """Atomically apply a full or incremental batch and advance version last."""
 
         mode = "incremental" if self.library_version is not None else "full"
+        completed_at = synced_at or datetime.now(UTC)
+        if completed_at.tzinfo is None or completed_at.utcoffset() is None:
+            raise ValueError("synced_at must be timezone-aware")
         with self._connection() as connection, connection:
             items_written, unchanged = self._write_items(connection, batch.items)
             collections_written = self._write_collections(connection, batch)
@@ -32,6 +36,10 @@ class ZoteroStore:
             connection.execute(
                 "INSERT OR REPLACE INTO metadata (key, value) VALUES ('library_version', ?)",
                 (str(batch.library_version),),
+            )
+            connection.execute(
+                "INSERT OR REPLACE INTO metadata (key, value) VALUES ('library_synced_at', ?)",
+                (completed_at.astimezone(UTC).isoformat(),),
             )
             if batch.local_api_version:
                 connection.execute(
@@ -57,6 +65,19 @@ class ZoteroStore:
                 "SELECT value FROM metadata WHERE key = 'local_api_version'"
             ).fetchone()
         return str(row[0]) if row else None
+
+    @property
+    def library_synced_at(self) -> datetime | None:
+        with self._connection() as connection:
+            row = connection.execute(
+                "SELECT value FROM metadata WHERE key = 'library_synced_at'"
+            ).fetchone()
+        if row is None:
+            return None
+        value = datetime.fromisoformat(str(row[0]))
+        if value.tzinfo is None or value.utcoffset() is None:
+            raise ValueError("stored library_synced_at must be timezone-aware")
+        return value.astimezone(UTC)
 
     def item_count(self) -> int:
         with self._connection() as connection:

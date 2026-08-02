@@ -4,9 +4,10 @@ Zotero arXiv Daily is a local-first tool that builds a compact interest profile 
 Zotero library and uses it to produce a daily arXiv reading list. Raw Zotero records,
 notes, annotations, and PDF content remain local.
 
-The v0.1.1 implementation adds production timing, preference signals, repeated-paper suppression,
-and deployment observability while preserving the local-first trust boundary. Release verification
-is tracked in the active [v0.1.1 plan](docs/plans/v0.1.1-production-hardening.md).
+The v0.1.2 implementation adds a meaningful profile snapshot timestamp and compact batch status.
+v0.1.1 added production timing, preference signals, repeated-paper suppression, and deployment
+observability while preserving the local-first trust boundary. Current work is tracked in the
+active [v0.1.2 plan](docs/plans/v0.1.2-profile-snapshot-site-density.md).
 
 ## Requirements
 
@@ -142,8 +143,8 @@ to avoid mixed-language navigation. The site stores feedback only in browser loc
 opens one prefilled GitHub Issue after an explicit user action; it contains no browser token. Raw
 Zotero content stays in the ignored local SQLite database.
 
-Published batches display generation start/completion, artifact build time, Zotero library version,
-and a validated link to the successful GitHub workflow run in `Asia/Shanghai`. Data older than 36
+Published batches display generation start/completion, artifact build time, a meaningful profile
+snapshot, and a validated link to the successful GitHub workflow run in `Asia/Shanghai`. Data older than 36
 hours is marked stale. Successfully deployed canonical arXiv IDs are suppressed for 14 days by
 default. Public candidate metadata is retained for 30 days in a bounded 1,000-paper pool, allowing
 an empty incremental retrieval to fall back to recent papers that are absent from successful-
@@ -151,6 +152,10 @@ publication history. An empty legacy pool receives one bounded seven-day backfil
 prepared during generation and promoted to the protected `state` branch only after Pages deployment
 succeeds. Existing v0.1.0 profiles, arXiv state, and publishable payloads remain readable; rebuilding
 and republishing the profile activates schema-v2 watchlists.
+
+The `Profile snapshot` is the time of the successful local Zotero synchronization used to build
+the protected profile. Rebuild and republish the profile after upgrading to v0.1.2 to populate this
+field; legacy protected profiles remain valid but omit it.
 
 ## Quality checks
 

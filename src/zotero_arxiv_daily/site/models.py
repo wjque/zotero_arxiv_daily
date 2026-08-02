@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from zotero_arxiv_daily.core.time import product_date, require_aware_utc
 from zotero_arxiv_daily.ranking.models import RecommendationSet
 
-PUBLISHABLE_SCHEMA_VERSION = 2
+PUBLISHABLE_SCHEMA_VERSION = 3
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _REVISION = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
@@ -75,6 +75,7 @@ class PublishedRecommendationSet:
     generation_completed_at: str | None = None
     artifact_built_at: str | None = None
     profile_library_version: int | None = None
+    profile_snapshot_at: str | None = None
     profile_schema_version: int | None = None
     workflow_run: WorkflowRun | None = None
     output_language: str = "en"
@@ -119,8 +120,10 @@ def read_published_set(path: Path) -> PublishedRecommendationSet:
         schema_version = value.get("schema_version")
         if schema_version == 1:
             return _read_v1(value)
-        if schema_version == PUBLISHABLE_SCHEMA_VERSION:
+        if schema_version == 2:
             return _read_v2(value)
+        if schema_version == PUBLISHABLE_SCHEMA_VERSION:
+            return _read_v3(value)
         raise ValueError
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise ValueError(f"publishable recommendation input is invalid: {path}") from error
@@ -159,6 +162,7 @@ def make_published_set(
         _instant(completed),
         None,
         result.profile_version,
+        result.profile_snapshot_at,
         profile_schema_version,
         workflow_run,
         output_language,
@@ -189,12 +193,43 @@ def _read_v2(value: dict[str, object]) -> PublishedRecommendationSet:
         raise ValueError
     workflow = value["workflow_run"]
     return PublishedRecommendationSet(
+        2,
+        _instant_text(value["generation_started_at"]),
+        _records(value["recommendations"], version=2),
+        _optional_instant(value["generation_completed_at"]),
+        _optional_instant(value["artifact_built_at"]),
+        _positive_int(value["profile_library_version"]),
+        None,
+        _positive_int(value["profile_schema_version"]),
+        _workflow_run(workflow) if workflow is not None else None,
+        _nonempty_string(value["output_language"]),
+    )
+
+
+def _read_v3(value: dict[str, object]) -> PublishedRecommendationSet:
+    fields = {
+        "schema_version",
+        "generation_started_at",
+        "generation_completed_at",
+        "artifact_built_at",
+        "profile_library_version",
+        "profile_snapshot_at",
+        "profile_schema_version",
+        "workflow_run",
+        "output_language",
+        "recommendations",
+    }
+    if set(value) != fields:
+        raise ValueError
+    workflow = value["workflow_run"]
+    return PublishedRecommendationSet(
         PUBLISHABLE_SCHEMA_VERSION,
         _instant_text(value["generation_started_at"]),
         _records(value["recommendations"], version=2),
         _optional_instant(value["generation_completed_at"]),
         _optional_instant(value["artifact_built_at"]),
         _positive_int(value["profile_library_version"]),
+        _optional_instant(value["profile_snapshot_at"]),
         _positive_int(value["profile_schema_version"]),
         _workflow_run(workflow) if workflow is not None else None,
         _nonempty_string(value["output_language"]),

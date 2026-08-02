@@ -94,7 +94,14 @@ def package_result(
 
     completion = (completed_at or now).astimezone(UTC)
     started_at = now.astimezone(UTC)
-    result = RecommendationSet(2, profile.source_library_version, started_at, records, completion)
+    result = RecommendationSet(
+        2,
+        profile.source_library_version,
+        started_at,
+        records,
+        completion,
+        profile.source_library_synced_at,
+    )
     manifest = RecommendationRunManifest(
         1,
         model,

@@ -5,10 +5,11 @@ from __future__ import annotations
 import re
 import unicodedata
 from dataclasses import dataclass
+from datetime import UTC, datetime
 
 ITEM_DIGEST_SCHEMA_VERSION = 1
 INTEREST_PROFILE_SCHEMA_VERSION = 1
-REMOTE_PROFILE_SCHEMA_VERSION = 2
+REMOTE_PROFILE_SCHEMA_VERSION = 3
 
 MAX_WATCHED_IDENTITIES = 32
 MAX_IDENTITY_ALIASES = 8
@@ -78,10 +79,18 @@ class RemoteProfile:
     representative_papers: tuple[tuple[int | None, tuple[str, ...], tuple[str, ...]], ...] = ()
     watched_authors: tuple[WatchedIdentity, ...] = ()
     watched_institutions: tuple[WatchedIdentity, ...] = ()
+    source_library_synced_at: str | None = None
 
     def __post_init__(self) -> None:
-        if self.schema_version not in {1, REMOTE_PROFILE_SCHEMA_VERSION}:
+        if self.schema_version not in {1, 2, REMOTE_PROFILE_SCHEMA_VERSION}:
             raise ValueError("unsupported remote profile schema version")
+        if self.source_library_synced_at is not None:
+            try:
+                instant = datetime.fromisoformat(self.source_library_synced_at)
+            except ValueError as error:
+                raise ValueError("source_library_synced_at is invalid") from error
+            if instant.tzinfo is None or instant.utcoffset() != UTC.utcoffset(instant):
+                raise ValueError("source_library_synced_at must be UTC")
         if len(self.watched_authors) > MAX_WATCHED_IDENTITIES:
             raise ValueError("too many watched authors")
         if len(self.watched_institutions) > MAX_WATCHED_IDENTITIES:

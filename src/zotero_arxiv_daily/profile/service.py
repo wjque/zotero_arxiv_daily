@@ -7,6 +7,7 @@ import json
 import re
 import subprocess
 from dataclasses import asdict, replace
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Protocol
 
@@ -82,6 +83,9 @@ def build_cached_remote_profile(
         representative_papers=representatives,
         watched_authors=watched_authors,
         watched_institutions=watched_institutions,
+        source_library_synced_at=(
+            store.library_synced_at.isoformat() if store.library_synced_at is not None else None
+        ),
     )
     _enforce_budget(remote, payload_budget)
     return remote, cache_hits
@@ -104,16 +108,20 @@ def read_remote_profile(path: Path, payload_budget: int = 30 * 1024) -> RemotePr
         "representative_papers",
     }
     v2_fields = v1_fields | {"watched_authors", "watched_institutions"}
+    v3_fields = v2_fields | {"source_library_synced_at"}
     if not isinstance(value, dict) or frozenset(value) not in {
         frozenset(v1_fields),
         frozenset(v2_fields),
+        frozenset(v3_fields),
     }:
         raise ConfigurationError("remote profile contains unsupported fields")
     try:
         schema_version = int(value["schema_version"])
         if schema_version == 1 and set(value) != v1_fields:
             raise ValueError
-        if schema_version == REMOTE_PROFILE_SCHEMA_VERSION and set(value) != v2_fields:
+        if schema_version == REMOTE_PROFILE_SCHEMA_VERSION and set(value) != v3_fields:
+            raise ValueError
+        if schema_version == 2 and set(value) != v2_fields:
             raise ValueError
         profile = RemoteProfile(
             schema_version,
@@ -128,6 +136,7 @@ def read_remote_profile(path: Path, payload_budget: int = 30 * 1024) -> RemotePr
             ),
             _watched_identities(value.get("watched_authors", [])),
             _watched_identities(value.get("watched_institutions", [])),
+            _optional_snapshot(value.get("source_library_synced_at")),
         )
     except (KeyError, TypeError, ValueError, IndexError) as error:
         raise ConfigurationError("remote profile schema is invalid") from error
@@ -137,6 +146,7 @@ def read_remote_profile(path: Path, payload_budget: int = 30 * 1024) -> RemotePr
         representative_papers=profile.representative_papers,
         watched_authors=profile.watched_authors,
         watched_institutions=profile.watched_institutions,
+        source_library_synced_at=profile.source_library_synced_at,
     )
     _enforce_budget(validated, payload_budget)
     return validated
@@ -212,3 +222,14 @@ def _string_tuple(value: object) -> tuple[str, ...]:
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise ValueError
     return tuple(value)
+
+
+def _optional_snapshot(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError
+    instant = datetime.fromisoformat(value)
+    if instant.tzinfo is None or instant.utcoffset() != UTC.utcoffset(instant):
+        raise ValueError
+    return instant.isoformat()

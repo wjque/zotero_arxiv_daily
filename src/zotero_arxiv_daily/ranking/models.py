@@ -35,6 +35,7 @@ class RecommendationSet:
     generation_started_at: datetime
     recommendations: tuple[RecommendationRecord, ...]
     generation_completed_at: datetime | None = None
+    profile_snapshot_at: str | None = None
 
     def __post_init__(self) -> None:
         started = require_aware_utc(self.generation_started_at, "generation_started_at")

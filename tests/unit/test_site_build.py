@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import gzip
+import json
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -75,6 +76,20 @@ def test_publishable_input_round_trip_rejects_internal_record_fields(tmp_path: P
     assert loaded == original
 
 
+def test_publishable_schema_v2_adapts_without_a_profile_snapshot(tmp_path: Path) -> None:
+    path = tmp_path / "recommendations.json"
+    current = make_published_set(_recommendations(), profile_schema_version=2)
+    payload = current.to_dict()
+    payload["schema_version"] = 2
+    payload.pop("profile_snapshot_at")
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = read_published_set(path)
+
+    assert loaded.schema_version == 2
+    assert loaded.profile_snapshot_at is None
+
+
 def test_schema_v2_uses_shanghai_date_and_self_contained_accessible_assets(
     tmp_path: Path,
 ) -> None:
@@ -95,7 +110,12 @@ def test_schema_v2_uses_shanghai_date_and_self_contained_accessible_assets(
         local_midnight_candidate, 3, "core", 0.8, "Summary", "Reason", ("watched_author",)
     )
     current = RecommendationSet(
-        2, 9, result.generation_started_at, (record,), result.generation_started_at
+        2,
+        9,
+        result.generation_started_at,
+        (record,),
+        result.generation_started_at,
+        "2026-08-01T12:00:00+00:00",
     )
     published = make_published_set(current, profile_schema_version=2, output_language="zh-CN")
     output = tmp_path / "site"
@@ -103,11 +123,17 @@ def test_schema_v2_uses_shanghai_date_and_self_contained_accessible_assets(
     build_site(published, output, public_output=True, passphrase=None)
 
     assert published.recommendations[0].published_on == "2026-08-02"
+    assert published.schema_version == 3
+    assert published.profile_snapshot_at == "2026-08-01T12:00:00+00:00"
     css = (output / "assets/site.css").read_text(encoding="utf-8")
     js = (output / "assets/app.js").read_text(encoding="utf-8")
     assert "prefers-color-scheme" in css
     assert "prefers-reduced-motion" in css
     assert "Asia/Shanghai" in js
+    assert "Profile snapshot" in js
+    assert "Zotero library version" not in js
+    assert "status-panel h2" in css
+    assert "font-size:.78rem" in css
     assert "Not interested" in js
     assert "Save for later" in js
     assert "zh-CN" not in js
