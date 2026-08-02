@@ -8,6 +8,9 @@ from datetime import datetime
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
 from zotero_arxiv_daily.core.time import require_aware_utc
 
+RECOMMENDATION_SET_SCHEMA_VERSION = 2
+RECOMMENDATION_RUN_MANIFEST_SCHEMA_VERSION = 1
+
 
 @dataclass(frozen=True, slots=True)
 class ScoredCandidate:
