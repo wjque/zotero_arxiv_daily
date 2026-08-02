@@ -1,11 +1,13 @@
 # Changelog
 
-## v0.1.2 - Unreleased
+## v0.1.2 - 2026-08-02
 
 ### Changed
 
 - Replaced the opaque public Zotero library revision with a timestamped profile snapshot and made
   batch-status metadata visually compact.
+- Ordered final recommendation cards by local relevance, validated model quality, latest arXiv
+  revision time, and canonical arXiv ID without changing diversity selection.
 
 ### Compatibility
 
