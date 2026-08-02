@@ -14,6 +14,10 @@ from zotero_arxiv_daily.zotero.models import SyncBatch
 from zotero_arxiv_daily.zotero.normalization import normalize_collection, normalize_item
 
 
+class _DeletedEndpointUnavailable(Exception):
+    """Signal that a Local API cannot provide incremental tombstones."""
+
+
 class ZoteroClient(Protocol):
     """Boundary used by sync orchestration and offline tests."""
 
@@ -35,13 +39,22 @@ class ZoteroLocalClient:
         items, item_version, api_version = self._get_json("/api/users/0/items", parameters)
         collections, collection_version, _ = self._get_json("/api/users/0/collections", parameters)
         deleted: object = []
+        deleted_version = 0
+        complete_snapshot = since is None
         if since is not None:
-            deleted, deleted_version, _ = self._get_json(
-                "/api/users/0/deleted", {"since": str(since)}
-            )
-            item_version = max(item_version, deleted_version)
-        else:
-            deleted_version = 0
+            try:
+                deleted, deleted_version, _ = self._get_json(
+                    "/api/users/0/deleted", {"since": str(since)}
+                )
+                item_version = max(item_version, deleted_version)
+            except _DeletedEndpointUnavailable:
+                items, item_version, api_version = self._get_json(
+                    "/api/users/0/items", {"format": "json", "include": "data"}
+                )
+                collections, collection_version, _ = self._get_json(
+                    "/api/users/0/collections", {"format": "json", "include": "data"}
+                )
+                complete_snapshot = True
         if isinstance(deleted, dict):
             deleted = deleted.get("items", [])
         if (
@@ -63,6 +76,7 @@ class ZoteroLocalClient:
             collections=tuple(normalize_collection(collection) for collection in collections),
             deleted_item_keys=deleted_keys,
             local_api_version=api_version,
+            complete_snapshot=complete_snapshot,
         )
 
     def _get_json(self, path: str, parameters: dict[str, str]) -> tuple[object, int, str | None]:
@@ -75,7 +89,11 @@ class ZoteroLocalClient:
                     cast(str | None, response.headers.get("Last-Modified-Version"))
                 )
                 api_version = cast(str | None, response.headers.get("Zotero-API-Version"))
-        except (HTTPError, URLError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        except HTTPError as error:
+            if path == "/api/users/0/deleted" and error.code == 404:
+                raise _DeletedEndpointUnavailable from error
+            raise ExternalServiceError("Zotero Local API request failed") from error
+        except (URLError, OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
             raise ExternalServiceError("Zotero Local API request failed") from error
         return payload, version, api_version
 

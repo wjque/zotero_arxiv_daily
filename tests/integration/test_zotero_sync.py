@@ -72,6 +72,25 @@ def test_incremental_delete_removes_the_local_record(tmp_path: Path) -> None:
     assert store.library_version == 2
 
 
+def test_complete_snapshot_reconciles_records_when_incremental_tombstones_are_unavailable(
+    tmp_path: Path,
+) -> None:
+    client = BatchClient(
+        [
+            SyncBatch(1, (_paper(),), (ZoteroCollection("COLL0001", 1, "Old", None),)),
+            SyncBatch(2, (), (), complete_snapshot=True),
+        ]
+    )
+    store = ZoteroStore(tmp_path / "state.sqlite3")
+
+    synchronize(client, store)
+    result = synchronize(client, store)
+
+    assert result.mode == "full"
+    assert result.items_deleted == 1
+    assert store.item_count() == 0
+
+
 def test_incremental_edit_and_collection_move_replace_local_state(tmp_path: Path) -> None:
     edited = ZoteroItem(
         "PAPER001",

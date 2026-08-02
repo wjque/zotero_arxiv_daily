@@ -25,7 +25,7 @@ class ZoteroStore:
     def apply(self, batch: SyncBatch, *, synced_at: datetime | None = None) -> SyncResult:
         """Atomically apply a full or incremental batch and advance version last."""
 
-        mode = "incremental" if self.library_version is not None else "full"
+        mode = "full" if batch.complete_snapshot or self.library_version is None else "incremental"
         completed_at = synced_at or datetime.now(UTC)
         if completed_at.tzinfo is None or completed_at.utcoffset() is None:
             raise ValueError("synced_at must be timezone-aware")
@@ -33,6 +33,13 @@ class ZoteroStore:
             items_written, unchanged = self._write_items(connection, batch.items)
             collections_written = self._write_collections(connection, batch)
             deleted = self._delete_items(connection, batch.deleted_item_keys)
+            if batch.complete_snapshot:
+                deleted += self._delete_missing_items(
+                    connection, frozenset(item.key for item in batch.items)
+                )
+                self._delete_missing_collections(
+                    connection, frozenset(collection.key for collection in batch.collections)
+                )
             connection.execute(
                 "INSERT OR REPLACE INTO metadata (key, value) VALUES ('library_version', ?)",
                 (str(batch.library_version),),
@@ -258,6 +265,20 @@ class ZoteroStore:
         for key in keys:
             deleted += connection.execute("DELETE FROM items WHERE key = ?", (key,)).rowcount
         return deleted
+
+    def _delete_missing_items(self, connection: sqlite3.Connection, keys: frozenset[str]) -> int:
+        existing = {str(row[0]) for row in connection.execute("SELECT key FROM items").fetchall()}
+        return self._delete_items(connection, tuple(sorted(existing - keys)))
+
+    def _delete_missing_collections(
+        self, connection: sqlite3.Connection, keys: frozenset[str]
+    ) -> None:
+        existing = {
+            str(row[0]) for row in connection.execute("SELECT key FROM collections").fetchall()
+        }
+        connection.executemany(
+            "DELETE FROM collections WHERE key = ?", ((key,) for key in sorted(existing - keys))
+        )
 
 
 def _item_payload(item: ZoteroItem) -> str:
