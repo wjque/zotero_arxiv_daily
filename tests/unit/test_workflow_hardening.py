@@ -10,6 +10,7 @@ def test_daily_workflow_guards_model_cost_and_promotes_history_after_deployment(
     assert "allow_peak_generation" in workflow
     assert "generation-window.outputs.decision == 'allowed'" in workflow
     assert workflow.index("Deploy GitHub Pages") < workflow.index("Persist successful run state")
+    assert "git worktree add -B state runtime/state origin/state" in workflow
     assert "recommendation-history.next.json runtime/state/recommendation-history.json" in workflow
 
 
