@@ -30,7 +30,12 @@ def retrieve(
         raise ValueError("candidate_ceiling and page_size must be positive")
     completed_at = now.astimezone(UTC)
     previous = store.checkpoint()
-    start_at = (previous.completed_at - overlap) if previous else completed_at - timedelta(days=7)
+    previous_candidates = store.candidates()
+    start_at = (
+        previous.completed_at - overlap
+        if previous is not None and previous_candidates
+        else completed_at - timedelta(days=7)
+    )
     start_gmt = start_at.strftime("%Y%m%d%H%M")
     end_gmt = completed_at.strftime("%Y%m%d%H%M")
     store.begin(completed_at)
@@ -61,4 +66,4 @@ def retrieve(
     )
     checkpoint = RetrievalCheckpoint(completed_at)
     store.commit(checkpoint, candidates)
-    return RetrievalResult(candidates, checkpoint, requests)
+    return RetrievalResult(store.candidates(), checkpoint, requests)
