@@ -8,6 +8,10 @@ from zotero_arxiv_daily.core.config import load_config
 from zotero_arxiv_daily.core.errors import ConfigurationError
 
 
+def test_default_recommendation_output_language_is_english() -> None:
+    assert load_config(environment={}).output_language == "en"
+
+
 def test_configuration_precedence_is_defaults_file_environment_then_cli(tmp_path: Path) -> None:
     config_path = tmp_path / "settings.toml"
     config_path.write_text(

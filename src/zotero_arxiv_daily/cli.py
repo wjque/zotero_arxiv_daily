@@ -248,7 +248,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     output_language=config.output_language,
                 ),
                 ProposalCache(args.cache),
-                prompt_version="recommendation-v1",
+                prompt_version=f"recommendation-v2:{config.output_language.casefold()}",
                 model="deepseek-v4-flash",
                 feedback_adjustments=feedback.adjustments(),
                 pre_rank_limit=config.recommendation_candidate_limit,

@@ -136,9 +136,11 @@ uv run zotero-arxiv-daily site build
 The builder expects `runtime/publishable-recommendations.json`, creates encrypted static data in
 `runtime/site`, and prompts for the passphrase only in the browser. To knowingly make generated
 recommendations public, set `ZAD_PUBLIC_OUTPUT=true` and leave `ZAD_PAGES_PASSPHRASE` unset.
-The site stores feedback only in browser local storage and opens one prefilled GitHub Issue after
-an explicit user action; it contains no browser token. Raw Zotero content stays in the ignored
-local SQLite database.
+The site interface and default generated summaries/reasons are English. The generated-prose
+language remains configurable with `ZAD_OUTPUT_LANGUAGE`, while interface controls remain English
+to avoid mixed-language navigation. The site stores feedback only in browser local storage and
+opens one prefilled GitHub Issue after an explicit user action; it contains no browser token. Raw
+Zotero content stays in the ignored local SQLite database.
 
 Published batches display generation start/completion, artifact build time, Zotero library version,
 and a validated link to the successful GitHub workflow run in `Asia/Shanghai`. Data older than 36

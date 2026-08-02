@@ -9,8 +9,8 @@
 - Bounded watched-author and watched-institution preferences, exact local matching, optional arXiv
   affiliation parsing, and capped inspectable ranking signals.
 - Versioned successful-recommendation history with 14-day repeat suppression and 30-day retention.
-- English and Simplified Chinese static-site labels, responsive cards, automatic light/dark color
-  support, accessible interaction states, and explicit asset-size budgets.
+- An English-only static-site interface, responsive cards, automatic light/dark color support,
+  accessible interaction states, and explicit asset-size budgets.
 
 ### Changed
 
@@ -19,6 +19,8 @@
 - Production Actions use reviewed immutable Node.js 24-compatible revisions.
 - New profile, arXiv-state, recommendation, and publishable output use their v0.1.1 schemas while
   retaining named v0.1.0 compatibility readers.
+- Recommendation prose defaults to English, the model prompt/cache namespace is revision-aware,
+  and DeepSeek structured output uses bounded deterministic settings and validation retries.
 
 ### Fixed
 
@@ -26,6 +28,8 @@
 - Failed, skipped, or partially deployed runs no longer advance recommendation history.
 - Empty incremental arXiv windows retain a bounded pool of recent, unexpired candidates so daily
   recommendations can fall back to historical papers not present in successful-publication history.
+- Feedback score adjustments now affect final local selection as well as model-shortlist creation;
+  revised paper metadata no longer reuses a stale cached proposal.
 
 ### Security
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -130,3 +131,65 @@ def test_recommendation_run_reuses_validated_cache_and_excludes_known_papers(
     assert first_manifest.estimated_cost_usd > 0
     assert second_manifest.model_requests == 0
     assert second_manifest.cache_hits == 1
+
+
+def test_feedback_adjustment_controls_final_selection(tmp_path: Path) -> None:
+    profile = RemoteProfile(1, 9, ("learning",), ("cs.LG",), (), ())
+    provider = _Provider()
+    now = datetime(2026, 8, 1, tzinfo=UTC)
+    candidates = tuple(
+        replace(
+            _candidate(f"2401.{index:05d}"),
+            title=f"Learning method topic unique{chr(96 + index)}xx",
+            authors=(f"Author {index}",),
+        )
+        for index in range(1, 22)
+    )
+
+    result, _ = run_recommendation(
+        candidates,
+        profile,
+        now,
+        provider,
+        ProposalCache(tmp_path / "proposals.json"),
+        prompt_version="v2",
+        model="deepseek-v4-flash",
+        feedback_adjustments={"2401.00001": -10.0},
+        pre_rank_limit=21,
+    )
+
+    identifiers = {item.candidate.arxiv_id.canonical for item in result.recommendations}
+    assert len(identifiers) == 20
+    assert "2401.00001" not in identifiers
+
+
+def test_candidate_revision_invalidates_cached_proposal(tmp_path: Path) -> None:
+    profile = RemoteProfile(1, 9, ("learning",), ("cs.LG",), (), ())
+    provider = _Provider()
+    cache = ProposalCache(tmp_path / "proposals.json")
+    now = datetime(2026, 8, 1, tzinfo=UTC)
+    original = _candidate("2401.00001")
+    revised = replace(original, arxiv_id=ArxivId("2401.00001", 2), summary="Revised abstract.")
+
+    run_recommendation(
+        (original,),
+        profile,
+        now,
+        provider,
+        cache,
+        prompt_version="v2",
+        model="deepseek-v4-flash",
+    )
+    _, manifest = run_recommendation(
+        (revised,),
+        profile,
+        now,
+        provider,
+        cache,
+        prompt_version="v2",
+        model="deepseek-v4-flash",
+    )
+
+    assert provider.calls == 2
+    assert manifest.model_requests == 1
+    assert manifest.cache_hits == 0
