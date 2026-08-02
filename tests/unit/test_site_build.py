@@ -62,8 +62,13 @@ def test_public_site_is_explicit_and_contains_accessible_feedback_controls(tmp_p
     assert result.encrypted is False
     assert (output / "data/recommendations.json").is_file()
     html = (output / "index.html").read_text(encoding="utf-8")
+    js = (output / "assets/app.js").read_text(encoding="utf-8")
     assert 'role="status"' in html
     assert "Skip to recommendations" in html
+    assert '<select id="date-filter"></select>' in html
+    assert 'type="date"' not in html
+    assert 'allDates:"All dates"' in js
+    assert "item=>item.published_on))].sort().reverse()" in js
 
 
 def test_publishable_input_round_trip_rejects_internal_record_fields(tmp_path: Path) -> None:
