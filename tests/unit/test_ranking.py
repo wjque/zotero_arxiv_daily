@@ -7,7 +7,7 @@ import pytest
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate, ArxivId
 from zotero_arxiv_daily.core.errors import ExternalServiceError
 from zotero_arxiv_daily.llm.contracts import parse_proposals
-from zotero_arxiv_daily.profile.models import RemoteProfile
+from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity
 from zotero_arxiv_daily.ranking.select import pre_rank, select_diverse
 
 
@@ -87,3 +87,68 @@ def test_feedback_adjustment_is_visible_in_local_score_components() -> None:
     scored = pre_rank((item,), profile, datetime(2026, 8, 1, tzinfo=UTC), {"2401.00001": -0.5})
 
     assert dict(scored[0].components)["feedback"] == -0.5
+
+
+def test_watched_identity_matches_are_exact_inspectable_and_capped() -> None:
+    profile = RemoteProfile(
+        2,
+        1,
+        ("learning",),
+        ("cs.LG",),
+        (),
+        (),
+        watched_authors=(WatchedIdentity("Fei-Fei Li", ("Li Fei-Fei",)),),
+        watched_institutions=(WatchedIdentity("MIT", ("Massachusetts Institute of Technology",)),),
+    )
+    base = _candidate("2401.00001", "cs.LG", "Learning")
+    matching = ArxivCandidate(
+        base.arxiv_id,
+        base.title,
+        ("FEI FEI LI",),
+        base.categories,
+        base.published,
+        base.updated,
+        base.abstract_url,
+        base.pdf_url,
+        base.summary,
+        ("Massachusetts Institute of Technology",),
+    )
+
+    components = dict(
+        pre_rank((matching,), profile, datetime(2026, 8, 1, tzinfo=UTC))[0].components
+    )
+
+    assert components["watched_author"] == 0.75
+    assert components["watched_institution"] == 0.25
+    assert components["watched_author"] + components["watched_institution"] == 1.0
+
+
+def test_watched_author_substring_does_not_match() -> None:
+    profile = RemoteProfile(
+        2,
+        1,
+        (),
+        ("cs.LG",),
+        (),
+        (),
+        watched_authors=(WatchedIdentity("Yann LeCun"),),
+    )
+    base = _candidate("2401.00001", "cs.LG", "Learning")
+    candidate = ArxivCandidate(
+        base.arxiv_id,
+        base.title,
+        ("Yann LeCun Jr",),
+        base.categories,
+        base.published,
+        base.updated,
+        base.abstract_url,
+        base.pdf_url,
+        base.summary,
+    )
+
+    assert (
+        dict(pre_rank((candidate,), profile, datetime(2026, 8, 1, tzinfo=UTC))[0].components)[
+            "watched_author"
+        ]
+        == 0
+    )

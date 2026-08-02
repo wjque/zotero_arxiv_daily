@@ -6,6 +6,7 @@ import json
 import os
 import re
 import tomllib
+import unicodedata
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -26,8 +27,20 @@ _ENVIRONMENT_KEYS = {
     "ZAD_PAGES_PASSPHRASE": "pages_passphrase",
     "ZAD_PUBLIC_OUTPUT": "public_output",
     "ZAD_OUTPUT_LANGUAGE": "output_language",
+    "ZAD_AUTHOR_PREFERENCE_BONUS": "author_preference_bonus",
+    "ZAD_INSTITUTION_PREFERENCE_BONUS": "institution_preference_bonus",
+    "ZAD_IDENTITY_BONUS_CAP": "identity_bonus_cap",
+    "ZAD_RECOMMENDATION_SUPPRESSION_DAYS": "recommendation_suppression_days",
 }
-_FILE_KEYS = frozenset(_ENVIRONMENT_KEYS.values())
+_FILE_KEYS = frozenset(_ENVIRONMENT_KEYS.values()) | {"watched_authors", "watched_institutions"}
+
+
+@dataclass(frozen=True, slots=True)
+class ConfiguredIdentity:
+    """Structured watched identity loaded from TOML or JSON."""
+
+    name: str
+    aliases: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +57,12 @@ class AppConfig:
     pages_passphrase: str | None = None
     public_output: bool = False
     output_language: str = "zh-CN"
+    watched_authors: tuple[ConfiguredIdentity, ...] = ()
+    watched_institutions: tuple[ConfiguredIdentity, ...] = ()
+    author_preference_bonus: float = 0.75
+    institution_preference_bonus: float = 0.5
+    identity_bonus_cap: float = 1.0
+    recommendation_suppression_days: int = 14
 
     def validate(self) -> None:
         """Validate values that are safe to check before an operation starts."""
@@ -63,6 +82,14 @@ class AppConfig:
             raise ConfigurationError("recommendation_candidate_limit must be between 40 and 80")
         if self.public_output and self.pages_passphrase:
             raise ConfigurationError("pages_passphrase must be unset when public_output is enabled")
+        if not 0 <= self.author_preference_bonus <= 1:
+            raise ConfigurationError("author_preference_bonus must be between zero and one")
+        if not 0 <= self.institution_preference_bonus <= 1:
+            raise ConfigurationError("institution_preference_bonus must be between zero and one")
+        if not 0 <= self.identity_bonus_cap <= 1:
+            raise ConfigurationError("identity_bonus_cap must be between zero and one")
+        if not 1 <= self.recommendation_suppression_days <= 30:
+            raise ConfigurationError("recommendation_suppression_days must be between 1 and 30")
 
 
 def load_config(
@@ -103,6 +130,24 @@ def load_config(
         public_output=_bool_value(normalized_values, "public_output", defaults.public_output),
         output_language=_string_value(
             normalized_values, "output_language", defaults.output_language
+        ),
+        watched_authors=_identity_list(normalized_values, "watched_authors"),
+        watched_institutions=_identity_list(normalized_values, "watched_institutions"),
+        author_preference_bonus=_float_value(
+            normalized_values, "author_preference_bonus", defaults.author_preference_bonus
+        ),
+        institution_preference_bonus=_float_value(
+            normalized_values,
+            "institution_preference_bonus",
+            defaults.institution_preference_bonus,
+        ),
+        identity_bonus_cap=_float_value(
+            normalized_values, "identity_bonus_cap", defaults.identity_bonus_cap
+        ),
+        recommendation_suppression_days=_int_value(
+            normalized_values,
+            "recommendation_suppression_days",
+            defaults.recommendation_suppression_days,
         ),
     )
     config.validate()
@@ -147,7 +192,14 @@ def _normalize_values(values: Mapping[str, object]) -> dict[str, object]:
     for name in ("zotero_base_url", "local_database_path", "output_language"):
         if name in normalized and not isinstance(normalized[name], str):
             raise ConfigurationError(f"{name} must be a string")
-    for name in ("deepseek_timeout_seconds", "recommendation_candidate_limit"):
+    for name in (
+        "deepseek_timeout_seconds",
+        "recommendation_candidate_limit",
+        "author_preference_bonus",
+        "institution_preference_bonus",
+        "identity_bonus_cap",
+        "recommendation_suppression_days",
+    ):
         value = normalized.get(name)
         if isinstance(value, str):
             try:
@@ -157,6 +209,39 @@ def _normalize_values(values: Mapping[str, object]) -> dict[str, object]:
         if name in normalized and not isinstance(normalized[name], (int, float)):
             raise ConfigurationError(f"{name} must be numeric")
     return normalized
+
+
+def _identity_list(values: Mapping[str, object], name: str) -> tuple[ConfiguredIdentity, ...]:
+    raw = values.get(name, [])
+    if not isinstance(raw, list) or len(raw) > 32:
+        raise ConfigurationError(f"{name} must be an array with at most 32 entries")
+    identities: list[ConfiguredIdentity] = []
+    for entry in raw:
+        if (
+            not isinstance(entry, dict)
+            or not set(entry) <= {"name", "aliases"}
+            or "name" not in entry
+        ):
+            raise ConfigurationError(f"{name} entries require only name and optional aliases")
+        identity_name = entry["name"]
+        aliases = entry.get("aliases", [])
+        if not isinstance(identity_name, str) or not isinstance(aliases, list):
+            raise ConfigurationError(f"{name} names and aliases must be strings")
+        if len(aliases) > 8 or not all(isinstance(alias, str) for alias in aliases):
+            raise ConfigurationError(f"{name} entries may contain at most 8 string aliases")
+        identity_values = (identity_name, *aliases)
+        if any(not value.strip() or len(value.encode("utf-8")) > 160 for value in identity_values):
+            raise ConfigurationError(f"{name} contains an invalid identity")
+        normalized = {
+            " ".join(
+                re.sub(r"[^\w]+", " ", unicodedata.normalize("NFKC", value).casefold()).split()
+            )
+            for value in identity_values
+        }
+        if len(normalized) != len(identity_values):
+            raise ConfigurationError(f"{name} contains duplicate normalized aliases")
+        identities.append(ConfiguredIdentity(identity_name, tuple(aliases)))
+    return tuple(identities)
 
 
 def _parse_bool(value: object, field: str) -> bool:

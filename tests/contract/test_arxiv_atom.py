@@ -18,6 +18,28 @@ def test_parse_atom_feed_preserves_public_dates_and_canonical_revision() -> None
     assert candidate.abstract_url == "https://arxiv.org/abs/2401.01234"
 
 
+def test_parse_atom_feed_preserves_bounded_explicit_affiliations() -> None:
+    payload = _FEED.replace(
+        b"<author><name>Ada</name></author>",
+        b'<author><name>Ada</name><arxiv:affiliation xmlns:arxiv="http://arxiv.org/schemas/atom">  MIT  </arxiv:affiliation></author>',
+    )
+
+    assert parse_feed(payload)[0].affiliations == ("MIT",)
+
+
+def test_parse_atom_feed_rejects_oversized_affiliation() -> None:
+    affiliation = b"x" * 257
+    payload = _FEED.replace(
+        b"<author><name>Ada</name></author>",
+        b'<author><name>Ada</name><arxiv:affiliation xmlns:arxiv="http://arxiv.org/schemas/atom">'
+        + affiliation
+        + b"</arxiv:affiliation></author>",
+    )
+
+    with pytest.raises(ExternalServiceError, match="affiliation"):
+        parse_feed(payload)
+
+
 def test_parse_atom_rejects_malformed_xml() -> None:
     with pytest.raises(ExternalServiceError, match="malformed"):
         parse_feed(b"<feed>")

@@ -50,3 +50,17 @@ def test_configuration_validates_model_timeout_and_candidate_limit() -> None:
     assert config.recommendation_candidate_limit == 40
     with pytest.raises(ConfigurationError, match="candidate_limit"):
         load_config(environment={"ZAD_RECOMMENDATION_CANDIDATE_LIMIT": "39"})
+
+
+def test_configuration_loads_structured_bounded_watchlists(tmp_path: Path) -> None:
+    path = tmp_path / "settings.toml"
+    path.write_text(
+        '[[watched_authors]]\nname = "Saining Xie"\naliases = ["Xie Saining"]\n'
+        '[[watched_institutions]]\nname = "DeepMind"\naliases = ["Google DeepMind"]\n',
+        encoding="utf-8",
+    )
+
+    config = load_config(config_path=path, environment={})
+
+    assert config.watched_authors[0].name == "Saining Xie"
+    assert config.watched_institutions[0].aliases == ("Google DeepMind",)

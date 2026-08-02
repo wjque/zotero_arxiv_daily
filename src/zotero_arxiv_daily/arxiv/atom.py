@@ -12,6 +12,8 @@ from zotero_arxiv_daily.core.errors import ExternalServiceError
 
 _ATOM = "{http://www.w3.org/2005/Atom}"
 _ARXIV = "{http://arxiv.org/schemas/atom}"
+_MAX_AFFILIATIONS = 32
+_MAX_AFFILIATION_BYTES = 256
 
 
 def parse_feed(payload: bytes) -> tuple[ArxivCandidate, ...]:
@@ -40,18 +42,28 @@ def _parse_entry(entry: ElementTree.Element) -> ArxivCandidate:
     )
     if not categories:
         raise ExternalServiceError("arXiv entry has no categories")
+    authors = entry.findall(f"{_ATOM}author")
+    affiliations = tuple(
+        dict.fromkeys(
+            _bounded_affiliation(node.text)
+            for author in authors
+            for node in author.findall(f"{_ARXIV}affiliation")
+            if node.text and node.text.strip()
+        )
+    )
+    if len(affiliations) > _MAX_AFFILIATIONS:
+        raise ExternalServiceError("arXiv entry has too many affiliation values")
     return ArxivCandidate(
         identifier,
         _collapse(_text(entry, f"{_ATOM}title")),
-        tuple(
-            _collapse(_text(author, f"{_ATOM}name")) for author in entry.findall(f"{_ATOM}author")
-        ),
+        tuple(_collapse(_text(author, f"{_ATOM}name")) for author in authors),
         categories,
         _timestamp(_text(entry, f"{_ATOM}published")),
         _timestamp(_text(entry, f"{_ATOM}updated")),
         abstract_url,
         pdf_url,
         _collapse(_text(entry, f"{_ATOM}summary")),
+        affiliations,
     )
 
 
@@ -72,3 +84,10 @@ def _timestamp(value: str) -> datetime:
 
 def _collapse(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
+
+
+def _bounded_affiliation(value: str) -> str:
+    collapsed = _collapse(value)
+    if not collapsed or len(collapsed.encode("utf-8")) > _MAX_AFFILIATION_BYTES:
+        raise ExternalServiceError("arXiv entry has an invalid affiliation value")
+    return collapsed

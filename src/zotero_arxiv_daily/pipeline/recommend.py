@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from collections.abc import Callable
 from dataclasses import asdict
-from datetime import datetime
+from datetime import UTC, datetime
 from time import perf_counter
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
@@ -27,16 +27,38 @@ def recommend(
     profile: RemoteProfile,
     proposals: tuple[ModelProposal, ...],
     now: datetime,
+    *,
+    author_bonus: float = 0.75,
+    institution_bonus: float = 0.5,
+    identity_bonus_cap: float = 1.0,
 ) -> tuple[RecommendationRecord, ...]:
     """Apply local policy after model validation; models cannot select URLs or state changes."""
 
     by_id = {proposal.arxiv_id: proposal for proposal in proposals}
-    selected = select_diverse(pre_rank(candidates, profile, now))
+    selected = select_diverse(
+        pre_rank(
+            candidates,
+            profile,
+            now,
+            author_bonus=author_bonus,
+            institution_bonus=institution_bonus,
+            identity_bonus_cap=identity_bonus_cap,
+        )
+    )
     records: list[RecommendationRecord] = []
     for item in selected:
         proposal = by_id.get(item.candidate.arxiv_id.canonical)
         if proposal is None or proposal.quality < 0.5:
             continue
+        components = dict(item.components)
+        identity_matches = tuple(
+            name
+            for name, component in (
+                ("watched_author", components["watched_author"]),
+                ("watched_institution", components["watched_institution"]),
+            )
+            if component > 0
+        )
         records.append(
             RecommendationRecord(
                 item.candidate,
@@ -45,6 +67,7 @@ def recommend(
                 proposal.quality,
                 proposal.summary,
                 proposal.reason,
+                identity_matches,
             )
         )
     return tuple(records)
@@ -62,10 +85,13 @@ def package_result(
     estimated_tokens: int,
     estimated_cost_usd: float = 0.0,
     duration_seconds: float = 0.0,
+    completed_at: datetime | None = None,
 ) -> tuple[RecommendationSet, RecommendationRunManifest]:
     """Create versioned recommendation data and non-sensitive operational metadata."""
 
-    result = RecommendationSet(1, profile.source_library_version, now, records)
+    completion = (completed_at or now).astimezone(UTC)
+    started_at = now.astimezone(UTC)
+    result = RecommendationSet(2, profile.source_library_version, started_at, records, completion)
     manifest = RecommendationRunManifest(
         1,
         model,
@@ -76,6 +102,9 @@ def package_result(
         estimated_tokens,
         estimated_cost_usd,
         duration_seconds,
+        started_at,
+        completion,
+        profile.source_library_version,
     )
     return result, manifest
 
@@ -93,6 +122,10 @@ def run_recommendation(
     feedback_adjustments: dict[str, float] | None = None,
     pre_rank_limit: int = 60,
     estimate_cost: Callable[[int], float] | None = None,
+    author_bonus: float = 0.75,
+    institution_bonus: float = 0.5,
+    identity_bonus_cap: float = 1.0,
+    completed_at: datetime | None = None,
 ) -> tuple[RecommendationSet, RecommendationRunManifest]:
     """Run bounded, cached model work while retaining final policy locally."""
 
@@ -102,7 +135,15 @@ def run_recommendation(
     eligible = tuple(
         candidate for candidate in candidates if candidate.arxiv_id.canonical not in excluded_ids
     )
-    ranked = pre_rank(eligible, profile, now, feedback_adjustments)[:pre_rank_limit]
+    ranked = pre_rank(
+        eligible,
+        profile,
+        now,
+        feedback_adjustments,
+        author_bonus=author_bonus,
+        institution_bonus=institution_bonus,
+        identity_bonus_cap=identity_bonus_cap,
+    )[:pre_rank_limit]
     selected_candidates = tuple(item.candidate for item in ranked)
     cached, missing, cache_hits = _load_cached_proposals(
         selected_candidates, profile, cache, prompt_version, model
@@ -113,7 +154,15 @@ def run_recommendation(
             cache.key(proposal.arxiv_id, profile.source_library_version, prompt_version, model),
             json.dumps(asdict(proposal), ensure_ascii=False, separators=(",", ":")),
         )
-    records = recommend(selected_candidates, profile, cached + fresh, now)
+    records = recommend(
+        selected_candidates,
+        profile,
+        cached + fresh,
+        now,
+        author_bonus=author_bonus,
+        institution_bonus=institution_bonus,
+        identity_bonus_cap=identity_bonus_cap,
+    )
     duration_seconds = perf_counter() - started
     estimated_cost_usd = estimate_cost(usage.estimated_tokens) if estimate_cost else 0.0
     return package_result(
@@ -127,6 +176,7 @@ def run_recommendation(
         estimated_tokens=usage.estimated_tokens,
         estimated_cost_usd=estimated_cost_usd,
         duration_seconds=duration_seconds,
+        completed_at=completed_at or datetime.now(UTC),
     )
 
 

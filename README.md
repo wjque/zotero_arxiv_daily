@@ -4,9 +4,9 @@ Zotero arXiv Daily is a local-first tool that builds a compact interest profile 
 Zotero library and uses it to produce a daily arXiv reading list. Raw Zotero records,
 notes, annotations, and PDF content remain local.
 
-The project has completed the local profile, arXiv retrieval, recommendation, and static-site
-milestones of v0.1.0. GitHub automation and release hardening remain in the active
-[v0.1.0 plan](docs/plans/v0.1.0-initial-mvp.md).
+The v0.1.1 implementation adds production timing, preference signals, repeated-paper suppression,
+and deployment observability while preserving the local-first trust boundary. Release verification
+is tracked in the active [v0.1.1 plan](docs/plans/v0.1.1-production-hardening.md).
 
 ## Requirements
 
@@ -57,6 +57,54 @@ Build a compact local remote-profile candidate after synchronization:
 uv run zotero-arxiv-daily profile build
 ```
 
+Optional watched identities are structured configuration, not global defaults. Exact normalized
+names and aliases can add a bounded local score component; watchlists stay in the protected profile
+and are not sent to DeepSeek. For example:
+
+```toml
+[[watched_authors]]
+name = "Yann LeCun"
+
+[[watched_authors]]
+name = "Fei-Fei Li"
+aliases = ["Li Fei-Fei"]
+
+[[watched_authors]]
+name = "Saining Xie"
+
+[[watched_institutions]]
+name = "DeepMind"
+aliases = ["Google DeepMind"]
+
+[[watched_institutions]]
+name = "Meta"
+aliases = ["Meta AI", "FAIR"]
+
+[[watched_institutions]]
+name = "OpenAI"
+
+[[watched_institutions]]
+name = "ByteDance"
+
+[[watched_institutions]]
+name = "Carnegie Mellon University"
+aliases = ["CMU"]
+
+[[watched_institutions]]
+name = "Massachusetts Institute of Technology"
+aliases = ["MIT"]
+
+[[watched_institutions]]
+name = "Stanford University"
+aliases = ["Stanford"]
+```
+
+At most 32 authors and 32 institutions are accepted, with at most 8 aliases per identity and 160
+UTF-8 bytes per value. Exact equality after Unicode, case, punctuation, and whitespace normalization
+is required; substring matching and author disambiguation are intentionally not performed. Missing
+arXiv affiliation metadata gives no institution bonus. Defaults are `0.75` for an author, `0.5` for
+an institution, and `1.0` combined, configurable through the variables in `.env.example`.
+
 It writes `runtime/remote-profile.json` with owner-only permissions. The export contains only
 bounded topic terms and inferred arXiv categories; it excludes titles, abstracts, notes,
 annotations, identifiers, collections, and matching evidence. Unchanged local inputs reuse
@@ -72,6 +120,12 @@ uv run zotero-arxiv-daily profile publish-github
 
 ## Current status and operation
 
+The production workflow is scheduled at `10:30 UTC` (`18:30 Asia/Shanghai`). It evaluates actual
+local time before generation: delayed scheduled runs outside `18:30–08:30` skip without a model
+call or state update. A manual peak-time run must explicitly set `allow_peak_generation=true`.
+DeepSeek's current pricing page does not advertise the historical off-peak discount, so this window
+is a user-approved cost-control policy rather than a claim of discounted pricing.
+
 Build static output from validated publishable recommendations with the default protected mode:
 
 ```bash
@@ -85,6 +139,13 @@ recommendations public, set `ZAD_PUBLIC_OUTPUT=true` and leave `ZAD_PAGES_PASSPH
 The site stores feedback only in browser local storage and opens one prefilled GitHub Issue after
 an explicit user action; it contains no browser token. Raw Zotero content stays in the ignored
 local SQLite database.
+
+Published batches display generation start/completion, artifact build time, Zotero library version,
+and a validated link to the successful GitHub workflow run in `Asia/Shanghai`. Data older than 36
+hours is marked stale. Successfully deployed canonical arXiv IDs are suppressed for 14 days by
+default; history is prepared during generation and promoted to the protected `state` branch only
+after Pages deployment succeeds. Existing v0.1.0 profiles, arXiv state, and publishable payloads
+remain readable; rebuilding and republishing the profile activates schema-v2 watchlists.
 
 ## Quality checks
 

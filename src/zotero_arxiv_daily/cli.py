@@ -16,12 +16,14 @@ from zotero_arxiv_daily.arxiv.retrieval import retrieve
 from zotero_arxiv_daily.arxiv.storage import ArxivStateStore
 from zotero_arxiv_daily.core.config import load_config
 from zotero_arxiv_daily.core.errors import ApplicationError
+from zotero_arxiv_daily.core.time import generation_decision
 from zotero_arxiv_daily.doctor import Diagnostic, doctor_exit_code, run_doctor
 from zotero_arxiv_daily.feedback.ingest import FeedbackStateStore, read_github_issues
 from zotero_arxiv_daily.llm.cache import ProposalCache
 from zotero_arxiv_daily.llm.deepseek import DeepSeekClient
 from zotero_arxiv_daily.pipeline.recommend import run_recommendation
 from zotero_arxiv_daily.profile.export import write_remote_profile
+from zotero_arxiv_daily.profile.models import WatchedIdentity
 from zotero_arxiv_daily.profile.service import (
     build_cached_remote_profile,
     publish_github_secret,
@@ -29,10 +31,12 @@ from zotero_arxiv_daily.profile.service import (
 )
 from zotero_arxiv_daily.site.build import build_site
 from zotero_arxiv_daily.site.models import (
+    WorkflowRun,
     make_published_set,
     read_published_set,
     write_published_set,
 )
+from zotero_arxiv_daily.storage.recommendation_history import RecommendationHistoryStore
 from zotero_arxiv_daily.zotero.client import ZoteroLocalClient
 from zotero_arxiv_daily.zotero.storage import ZoteroStore
 from zotero_arxiv_daily.zotero.sync import synchronize
@@ -46,6 +50,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--config", type=Path, help="Path to a TOML or JSON configuration file")
     parser.add_argument("--zotero-base-url", help="Override the local Zotero API base URL")
     subcommands = parser.add_subparsers(dest="command", required=True)
+    schedule_parser = subcommands.add_parser("schedule", help="Evaluate the model-cost window")
+    schedule_parser.add_argument(
+        "--event-name", choices=("schedule", "workflow_dispatch"), required=True
+    )
+    schedule_parser.add_argument("--allow-peak-generation", action="store_true")
     doctor_parser = subcommands.add_parser(
         "doctor", help="Diagnose local and protected dependencies"
     )
@@ -118,6 +127,18 @@ def build_parser() -> argparse.ArgumentParser:
     recommend_run_parser.add_argument(
         "--output", type=Path, default=Path("runtime/publishable-recommendations.json")
     )
+    recommend_run_parser.add_argument(
+        "--history", type=Path, default=Path("runtime/recommendation-history.json")
+    )
+    recommend_run_parser.add_argument(
+        "--prepared-history", type=Path, default=Path("runtime/recommendation-history.next.json")
+    )
+    recommend_run_parser.add_argument(
+        "--manifest", type=Path, default=Path("runtime/run-manifest.json")
+    )
+    recommend_run_parser.add_argument("--workflow-run-id", type=int)
+    recommend_run_parser.add_argument("--workflow-run-attempt", type=int)
+    recommend_run_parser.add_argument("--source-revision")
     return parser
 
 
@@ -130,6 +151,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             config_path=args.config,
             overrides={"zotero_base_url": args.zotero_base_url},
         )
+        if args.command == "schedule":
+            print(
+                generation_decision(
+                    datetime.now(UTC),
+                    event_name=args.event_name,
+                    allow_peak_generation=args.allow_peak_generation,
+                )
+            )
+            return 0
         if args.command == "doctor":
             diagnostics = run_doctor(config, check_zotero=not args.skip_zotero_check)
             _render_diagnostics(diagnostics, args.format)
@@ -149,7 +179,16 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "profile" and args.profile_command == "build":
             store = ZoteroStore(args.database or Path(config.local_database_path))
-            remote, cache_hits = build_cached_remote_profile(store, args.payload_budget)
+            remote, cache_hits = build_cached_remote_profile(
+                store,
+                args.payload_budget,
+                watched_authors=tuple(
+                    WatchedIdentity(item.name, item.aliases) for item in config.watched_authors
+                ),
+                watched_institutions=tuple(
+                    WatchedIdentity(item.name, item.aliases) for item in config.watched_institutions
+                ),
+            )
             write_remote_profile(remote, args.output)
             print(
                 "profile exported: "
@@ -197,10 +236,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ApplicationError("set ZAD_DEEPSEEK_API_KEY before generating recommendations")
             profile = read_remote_profile(args.profile)
             feedback = FeedbackStateStore(args.feedback_state)
+            started_at = datetime.now(UTC)
+            history = RecommendationHistoryStore(args.history)
             recommendation_set, manifest = run_recommendation(
                 ArxivStateStore(args.candidate_state).candidates(),
                 profile,
-                datetime.now(UTC),
+                started_at,
                 DeepSeekClient(
                     config.deepseek_api_key,
                     timeout_seconds=config.deepseek_timeout_seconds,
@@ -211,8 +252,35 @@ def main(argv: Sequence[str] | None = None) -> int:
                 model="deepseek-v4-flash",
                 feedback_adjustments=feedback.adjustments(),
                 pre_rank_limit=config.recommendation_candidate_limit,
+                excluded_ids=history.excluded_ids(
+                    started_at, config.recommendation_suppression_days
+                ),
+                author_bonus=config.author_preference_bonus,
+                institution_bonus=config.institution_preference_bonus,
+                identity_bonus_cap=config.identity_bonus_cap,
             )
-            write_published_set(make_published_set(recommendation_set), args.output)
+            workflow_run = _workflow_run(args, config.github_repository)
+            write_published_set(
+                make_published_set(
+                    recommendation_set,
+                    profile_schema_version=profile.schema_version,
+                    workflow_run=workflow_run,
+                    output_language=config.output_language,
+                ),
+                args.output,
+            )
+            history.prepare_success(
+                recommendation_set,
+                args.prepared_history,
+                recommendation_set.generation_completed_at or started_at,
+            )
+            args.manifest.parent.mkdir(parents=True, exist_ok=True)
+            args.manifest.write_text(
+                json.dumps(
+                    asdict(manifest), ensure_ascii=False, default=str, separators=(",", ":")
+                ),
+                encoding="utf-8",
+            )
             print(
                 "recommendations generated: "
                 f"{manifest.recommendation_count} selected, "
@@ -224,6 +292,22 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(f"{prefix}: {error}")
         return int(error.exit_code)
     raise AssertionError(f"unsupported command: {args.command}")
+
+
+def _workflow_run(args: argparse.Namespace, repository: str | None) -> WorkflowRun | None:
+    values = (args.workflow_run_id, args.workflow_run_attempt, args.source_revision, repository)
+    if all(value is None for value in values):
+        return None
+    if any(value is None for value in values):
+        raise ApplicationError("workflow run metadata must be supplied as a complete set")
+    run_id = int(args.workflow_run_id)
+    return WorkflowRun(
+        run_id,
+        int(args.workflow_run_attempt),
+        str(args.source_revision),
+        str(repository),
+        f"https://github.com/{repository}/actions/runs/{run_id}",
+    )
 
 
 def _render_diagnostics(diagnostics: Sequence[Diagnostic], output_format: str) -> None:
