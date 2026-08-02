@@ -43,6 +43,7 @@ class SyncBatch:
     collections: tuple[ZoteroCollection, ...]
     deleted_item_keys: tuple[str, ...] = ()
     local_api_version: str | None = None
+    complete_snapshot: bool = False
 
 
 @dataclass(frozen=True, slots=True)
