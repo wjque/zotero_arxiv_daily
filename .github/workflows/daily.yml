@@ -88,7 +88,11 @@ jobs:
         if: steps.generation-window.outputs.decision == 'allowed'
         run: |
           git worktree remove runtime/state --force 2>/dev/null || true
-          git worktree add -B state runtime/state
+          if git show-ref --verify --quiet refs/remotes/origin/state; then
+            git worktree add -B state runtime/state origin/state
+          else
+            git worktree add -B state runtime/state
+          fi
           cp runtime/arxiv-state.json runtime/feedback-state.json runtime/proposal-cache.json runtime/state/
           cp runtime/recommendation-history.next.json runtime/state/recommendation-history.json
           git -C runtime/state add '*.json'
