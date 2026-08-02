@@ -23,6 +23,9 @@ def write_remote_profile(profile: RemoteProfile, path: Path) -> None:
             if profile.schema_version == 1:
                 payload.pop("watched_authors")
                 payload.pop("watched_institutions")
+                payload.pop("source_library_synced_at")
+            elif profile.schema_version == 2:
+                payload.pop("source_library_synced_at")
             json.dump(payload, output, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
             output.flush()
             os.fsync(output.fileno())

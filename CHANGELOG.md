@@ -1,5 +1,17 @@
 # Changelog
 
+## v0.1.2 - Unreleased
+
+### Changed
+
+- Replaced the opaque public Zotero library revision with a timestamped profile snapshot and made
+  batch-status metadata visually compact.
+
+### Compatibility
+
+- Remote-profile v3 and publishable-site v3 carry an optional source-library synchronization
+  instant; v1/v2 inputs remain readable and omit unavailable snapshot information.
+
 ## v0.1.1 - 2026-08-02
 
 ### Added
