@@ -30,6 +30,8 @@
   recommendations can fall back to historical papers not present in successful-publication history.
 - Feedback score adjustments now affect final local selection as well as model-shortlist creation;
   revised paper metadata no longer reuses a stale cached proposal.
+- DeepSeek prompts no longer include a copyable illustrative paper ID, preventing otherwise-valid
+  structured output from referring to a candidate that was not requested.
 
 ### Security
 
