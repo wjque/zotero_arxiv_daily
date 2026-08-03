@@ -127,11 +127,23 @@ class ZoteroStore:
                     "SELECT payload FROM items WHERE parent_key = ? AND trashed = 0 ORDER BY key",
                     (key,),
                 ).fetchall()
+                collection_names = connection.execute(
+                    "SELECT collections.name FROM item_collections "
+                    "JOIN collections ON collections.key = item_collections.collection_key "
+                    "WHERE item_collections.item_key = ? ORDER BY collections.key",
+                    (key,),
+                ).fetchall()
+                root_payload = json.loads(str(payload))
+                if not isinstance(root_payload, dict):
+                    raise ValueError("stored Zotero item payload is invalid")
+                root_payload["collection_names"] = [str(name) for (name,) in collection_names]
                 rows.append(
                     (
                         str(key),
                         str(content_hash),
-                        str(payload),
+                        json.dumps(
+                            root_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+                        ),
                         tuple(str(row[0]) for row in children),
                     )
                 )

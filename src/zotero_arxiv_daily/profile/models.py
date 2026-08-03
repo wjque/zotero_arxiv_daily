@@ -7,9 +7,9 @@ import unicodedata
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-ITEM_DIGEST_SCHEMA_VERSION = 1
-INTEREST_PROFILE_SCHEMA_VERSION = 1
-REMOTE_PROFILE_SCHEMA_VERSION = 3
+ITEM_DIGEST_SCHEMA_VERSION = 2
+INTEREST_PROFILE_SCHEMA_VERSION = 2
+REMOTE_PROFILE_SCHEMA_VERSION = 4
 
 MAX_WATCHED_IDENTITIES = 32
 MAX_IDENTITY_ALIASES = 8
@@ -59,6 +59,27 @@ class ItemDigest:
 
 
 @dataclass(frozen=True, slots=True)
+class PreferenceFacet:
+    """A bounded derived interest signal that contains no Zotero prose or identifiers."""
+
+    kind: str
+    value: str
+    score: float
+    confidence: float
+    provenance: tuple[str, ...]
+
+    def __post_init__(self) -> None:
+        if self.kind not in {"domain", "method", "task"}:
+            raise ValueError("preference facet kind is unsupported")
+        if not self.value.strip() or len(self.value) > 80:
+            raise ValueError("preference facet value is invalid")
+        if not 0 <= self.score <= 1 or not 0 <= self.confidence <= 1:
+            raise ValueError("preference facet score and confidence must be normalized")
+        if not self.provenance or len(self.provenance) > 6:
+            raise ValueError("preference facet provenance is invalid")
+
+
+@dataclass(frozen=True, slots=True)
 class InterestProfile:
     schema_version: int
     source_library_version: int
@@ -66,6 +87,8 @@ class InterestProfile:
     recent_terms: tuple[tuple[str, float], ...]
     categories: tuple[tuple[str, float, str], ...]
     digest_count: int
+    long_term_facets: tuple[PreferenceFacet, ...] = ()
+    recent_facets: tuple[PreferenceFacet, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -80,9 +103,10 @@ class RemoteProfile:
     watched_authors: tuple[WatchedIdentity, ...] = ()
     watched_institutions: tuple[WatchedIdentity, ...] = ()
     source_library_synced_at: str | None = None
+    preference_facets: tuple[PreferenceFacet, ...] = ()
 
     def __post_init__(self) -> None:
-        if self.schema_version not in {1, 2, REMOTE_PROFILE_SCHEMA_VERSION}:
+        if self.schema_version not in {1, 2, 3, REMOTE_PROFILE_SCHEMA_VERSION}:
             raise ValueError("unsupported remote profile schema version")
         if self.source_library_synced_at is not None:
             try:

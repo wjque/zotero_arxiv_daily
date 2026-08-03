@@ -12,17 +12,19 @@ from pathlib import Path
 from typing import Protocol
 
 from zotero_arxiv_daily.core.errors import ConfigurationError, ExternalServiceError
+from zotero_arxiv_daily.evaluation.corpus import CorpusStore
 from zotero_arxiv_daily.profile.build import build_profile, make_digest, project_remote
 from zotero_arxiv_daily.profile.models import (
     REMOTE_PROFILE_SCHEMA_VERSION,
     InterestProfile,
     ItemDigest,
+    PreferenceFacet,
     RemoteProfile,
     WatchedIdentity,
 )
 from zotero_arxiv_daily.zotero.storage import ZoteroStore
 
-_PROMPT_VERSION = "deterministic-digest-v1"
+_PROMPT_VERSION = "deterministic-digest-v2"
 _SECRET_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,99}$")
 
 
@@ -46,6 +48,7 @@ def build_cached_remote_profile(
     *,
     watched_authors: tuple[WatchedIdentity, ...] = (),
     watched_institutions: tuple[WatchedIdentity, ...] = (),
+    curated_item_keys: frozenset[str] = frozenset(),
 ) -> tuple[RemoteProfile, int]:
     """Build only changed local digests and return an allowlisted remote projection."""
 
@@ -70,7 +73,15 @@ def build_cached_remote_profile(
             digest = _digest_from_json(cached)
         derived.append((key, cache_key, payload, children))
         digests.append(digest)
-    remote = project_remote(build_profile(tuple(derived), library_version), payload_budget)
+    remote = project_remote(
+        build_profile(
+            tuple(derived),
+            library_version,
+            observed_at=store.library_synced_at,
+            curated_item_keys=curated_item_keys,
+        ),
+        payload_budget,
+    )
     representatives = tuple(
         (digest.year, digest.terms[:5], digest.categories)
         for digest in sorted(
@@ -91,6 +102,12 @@ def build_cached_remote_profile(
     return remote, cache_hits
 
 
+def local_curated_item_keys(path: Path) -> frozenset[str]:
+    """Read the optional ignored corpus ledger without making it a remote dependency."""
+
+    return CorpusStore(path).positive_source_item_keys() if path.is_file() else frozenset()
+
+
 def read_remote_profile(path: Path, payload_budget: int = 30 * 1024) -> RemoteProfile:
     """Revalidate an exported profile before it crosses the local/remote boundary."""
 
@@ -109,17 +126,19 @@ def read_remote_profile(path: Path, payload_budget: int = 30 * 1024) -> RemotePr
     }
     v2_fields = v1_fields | {"watched_authors", "watched_institutions"}
     v3_fields = v2_fields | {"source_library_synced_at"}
+    v4_fields = v3_fields | {"preference_facets"}
     if not isinstance(value, dict) or frozenset(value) not in {
         frozenset(v1_fields),
         frozenset(v2_fields),
         frozenset(v3_fields),
+        frozenset(v4_fields),
     }:
         raise ConfigurationError("remote profile contains unsupported fields")
     try:
         schema_version = int(value["schema_version"])
         if schema_version == 1 and set(value) != v1_fields:
             raise ValueError
-        if schema_version == REMOTE_PROFILE_SCHEMA_VERSION and set(value) != v3_fields:
+        if schema_version == REMOTE_PROFILE_SCHEMA_VERSION and set(value) != v4_fields:
             raise ValueError
         if schema_version == 2 and set(value) != v2_fields:
             raise ValueError
@@ -137,6 +156,7 @@ def read_remote_profile(path: Path, payload_budget: int = 30 * 1024) -> RemotePr
             _watched_identities(value.get("watched_authors", [])),
             _watched_identities(value.get("watched_institutions", [])),
             _optional_snapshot(value.get("source_library_synced_at")),
+            _preference_facets(value.get("preference_facets", [])),
         )
     except (KeyError, TypeError, ValueError, IndexError) as error:
         raise ConfigurationError("remote profile schema is invalid") from error
@@ -147,6 +167,7 @@ def read_remote_profile(path: Path, payload_budget: int = 30 * 1024) -> RemotePr
         watched_authors=profile.watched_authors,
         watched_institutions=profile.watched_institutions,
         source_library_synced_at=profile.source_library_synced_at,
+        preference_facets=profile.preference_facets,
     )
     _enforce_budget(validated, payload_budget)
     return validated
@@ -167,12 +188,13 @@ def publish_github_secret(
 
 def profile_to_interest(profile: RemoteProfile) -> InterestProfile:
     return InterestProfile(
-        1,
+        2,
         profile.source_library_version,
         tuple((term, 1.0) for term in profile.topics),
         (),
         tuple((category, 1.0, "validated") for category in profile.core_categories),
         0,
+        profile.preference_facets,
     )
 
 
@@ -233,3 +255,33 @@ def _optional_snapshot(value: object) -> str | None:
     if instant.tzinfo is None or instant.utcoffset() != UTC.utcoffset(instant):
         raise ValueError
     return instant.isoformat()
+
+
+def _preference_facets(value: object) -> tuple[PreferenceFacet, ...]:
+    if not isinstance(value, list) or len(value) > 20:
+        raise ValueError
+    facets: list[PreferenceFacet] = []
+    for entry in value:
+        if not isinstance(entry, dict) or set(entry) != {
+            "kind",
+            "value",
+            "score",
+            "confidence",
+            "provenance",
+        }:
+            raise ValueError
+        provenance = entry["provenance"]
+        if not isinstance(provenance, list) or not all(
+            isinstance(item, str) for item in provenance
+        ):
+            raise ValueError
+        facets.append(
+            PreferenceFacet(
+                str(entry["kind"]),
+                str(entry["value"]),
+                float(entry["score"]),
+                float(entry["confidence"]),
+                tuple(provenance),
+            )
+        )
+    return tuple(facets)

@@ -31,6 +31,7 @@ from zotero_arxiv_daily.profile.export import write_remote_profile
 from zotero_arxiv_daily.profile.models import WatchedIdentity
 from zotero_arxiv_daily.profile.service import (
     build_cached_remote_profile,
+    local_curated_item_keys,
     publish_github_secret,
     read_remote_profile,
 )
@@ -82,6 +83,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     build_parser.add_argument("--output", type=Path, default=Path("runtime/remote-profile.json"))
     build_parser.add_argument("--payload-budget", type=int, default=30 * 1024)
+    build_parser.add_argument(
+        "--corpus-state", type=Path, default=Path("runtime/curated-corpus.json")
+    )
     publish_parser = profile_commands.add_parser(
         "publish-github", help="Publish a protected profile through gh"
     )
@@ -210,6 +214,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 watched_institutions=tuple(
                     WatchedIdentity(item.name, item.aliases) for item in config.watched_institutions
                 ),
+                curated_item_keys=local_curated_item_keys(args.corpus_state),
             )
             write_remote_profile(remote, args.output)
             print(

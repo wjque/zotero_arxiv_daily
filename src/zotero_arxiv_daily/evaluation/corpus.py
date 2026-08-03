@@ -104,6 +104,16 @@ class CorpusStore:
         applicable = tuple(event for event in state.events if event.occurred_at <= cutoff)
         return _resolve_snapshot(applicable, cutoff)
 
+    def positive_source_item_keys(self) -> frozenset[str]:
+        """Return current explicit positive Zotero sources without exposing labels remotely."""
+
+        latest = _latest_source_events(self.events())
+        return frozenset(
+            key
+            for key, event in latest.items()
+            if event.kind is JudgmentKind.LABEL and event.label is CorpusLabel.POSITIVE
+        )
+
     def import_zotero(
         self,
         items: tuple[ZoteroCorpusItem, ...],

@@ -12,6 +12,11 @@ from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity, no
 from zotero_arxiv_daily.ranking.models import RecommendationRecord, ScoredCandidate
 
 BASELINE_VERSION = "v0.1.2"
+BASELINE_SCHEMA_VERSIONS = {
+    "item_digest": 1,
+    "interest_profile": 1,
+    "remote_profile": 3,
+}
 
 _WORDS = re.compile(r"[a-z][a-z0-9-]{2,}")
 _SOURCE_QUOTAS = (("core", 14), ("adjacent", 4), ("exploration", 2))

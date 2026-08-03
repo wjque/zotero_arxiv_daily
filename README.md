@@ -57,6 +57,13 @@ Build a compact local remote-profile candidate after synchronization:
 uv run zotero-arxiv-daily profile build
 ```
 
+The v0.2 profile separates weak library metadata from stronger manual tags, collection membership,
+annotations, and optional curated positive examples. It uses local time decay for recent interests
+and derives bounded domain, method, and task facets. The protected v4 export contains only those
+derived facets and allowlisted topics; it never contains collection names or keys, titles, notes,
+annotations, identifiers, or labels. Use `--corpus-state PATH` to use a non-default local curated
+ledger; an absent ledger simply contributes no curated evidence.
+
 Optional watched identities are structured configuration, not global defaults. Exact normalized
 names and aliases can add a bounded local score component; watchlists stay in the protected profile
 and are not sent to DeepSeek. For example:
