@@ -12,14 +12,9 @@ from zotero_arxiv_daily.arxiv.models import ArxivCandidate, ArxivId
 from zotero_arxiv_daily.arxiv.storage import CANDIDATE_POOL_SCHEMA_VERSION
 from zotero_arxiv_daily.llm.cache import ProposalCache
 from zotero_arxiv_daily.llm.deepseek import DeepSeekClient
-from zotero_arxiv_daily.profile.models import (
-    INTEREST_PROFILE_SCHEMA_VERSION,
-    ITEM_DIGEST_SCHEMA_VERSION,
-    REMOTE_PROFILE_SCHEMA_VERSION,
-    RemoteProfile,
-    WatchedIdentity,
-)
+from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity
 from zotero_arxiv_daily.ranking.baseline import (
+    BASELINE_SCHEMA_VERSIONS,
     BASELINE_VERSION,
     order_baseline,
     score_baseline,
@@ -92,9 +87,11 @@ def test_baseline_contract_freezes_release_schemas_budgets_and_prompt() -> None:
     assert contract["model"]["candidate_limit"] == 40
     assert contract["model"]["estimated_input_token_budget"] == 12_000
     assert contract["model"]["provider_output_token_limit"] == 12_000
-    assert contract["schemas"]["item_digest"] == ITEM_DIGEST_SCHEMA_VERSION
-    assert contract["schemas"]["interest_profile"] == INTEREST_PROFILE_SCHEMA_VERSION
-    assert contract["schemas"]["remote_profile"] == REMOTE_PROFILE_SCHEMA_VERSION
+    assert {
+        "item_digest": contract["schemas"]["item_digest"],
+        "interest_profile": contract["schemas"]["interest_profile"],
+        "remote_profile": contract["schemas"]["remote_profile"],
+    } == BASELINE_SCHEMA_VERSIONS
     assert contract["schemas"]["arxiv_candidate_pool"] == CANDIDATE_POOL_SCHEMA_VERSION
     assert contract["schemas"]["recommendation_history"] == HISTORY_SCHEMA_VERSION
     assert contract["schemas"]["recommendation_set"] == RECOMMENDATION_SET_SCHEMA_VERSION
