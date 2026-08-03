@@ -10,6 +10,7 @@ from datetime import UTC, datetime
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
 from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity, normalize_identity
 from zotero_arxiv_daily.ranking.models import RecommendationRecord, ScoredCandidate
+from zotero_arxiv_daily.ranking.weights import DEFAULT_WEIGHT_SET, NormalizedFeature, WeightSet
 
 _WORDS = re.compile(r"[a-z][a-z0-9-]{2,}")
 
@@ -23,6 +24,7 @@ def pre_rank(
     author_bonus: float = 0.75,
     institution_bonus: float = 0.5,
     identity_bonus_cap: float = 1.0,
+    weight_set: WeightSet = DEFAULT_WEIGHT_SET,
 ) -> tuple[ScoredCandidate, ...]:
     """Score public candidates locally using derived profile terms and categories."""
 
@@ -32,18 +34,20 @@ def pre_rank(
     scored: list[ScoredCandidate] = []
     for candidate in candidates:
         words = set(_WORDS.findall((candidate.title + " " + candidate.summary).casefold()))
-        lexical = float(len(words & terms))
+        lexical = min(len(words & terms) / max(len(terms), 1), 1.0)
         category = (
-            2.0
+            1.0
             if set(candidate.categories) & core
-            else 1.0
+            else 0.5
             if set(candidate.categories) & adjacent
-            else 0.25
+            else 0.1
         )
         age = max((now.astimezone(UTC) - candidate.published).total_seconds() / 86400, 0.0)
         recency = max(0.0, 1.0 - age / 14)
         source = "core" if category == 2.0 else "adjacent" if category == 1.0 else "exploration"
-        feedback = (feedback_adjustments or {}).get(candidate.arxiv_id.canonical, 0.0)
+        raw_feedback = (feedback_adjustments or {}).get(candidate.arxiv_id.canonical, 0.0)
+        feedback = min(max(raw_feedback, 0.0), 1.0)
+        negative_feedback = min(max(-raw_feedback, 0.0), 1.0)
         author_match = _matches_any(candidate.authors, profile.watched_authors)
         institution_match = _matches_any(candidate.affiliations, profile.watched_institutions)
         watched_author = author_bonus if author_match else 0.0
@@ -52,17 +56,29 @@ def pre_rank(
         watched_institution = min(
             watched_institution, max(0.0, identity_bonus_cap - watched_author)
         )
-        components = (
-            ("lexical", lexical),
-            ("category", category),
-            ("recency", recency),
-            ("feedback", feedback),
+        features = (
+            NormalizedFeature("lexical", lexical, True, 1.0, "local-profile"),
+            NormalizedFeature("category", category, True, 1.0, "local-profile"),
+            NormalizedFeature("recency", recency, True, 1.0, "arxiv-metadata"),
+            NormalizedFeature("feedback", feedback, bool(feedback_adjustments), 1.0, "feedback-v2"),
+            NormalizedFeature(
+                "identity", watched_author + watched_institution, True, 1.0, "watchlist"
+            ),
+        )
+        interest = (lexical + category) / 2
+        score = (
+            weight_set.interest * interest
+            + weight_set.recency * recency
+            + weight_set.feedback * feedback
+            + weight_set.identity * (watched_author + watched_institution)
+            - weight_set.negative_feedback_cap * negative_feedback
+        )
+        components = tuple((feature.name, feature.value) for feature in features) + (
+            ("negative_feedback", negative_feedback),
             ("watched_author", watched_author),
             ("watched_institution", watched_institution),
         )
-        scored.append(
-            ScoredCandidate(candidate, sum(value for _, value in components), components, source)
-        )
+        scored.append(ScoredCandidate(candidate, max(score, 0.0), components, source))
     return tuple(sorted(scored, key=lambda item: (-item.score, item.candidate.arxiv_id.canonical)))
 
 
@@ -72,7 +88,7 @@ def _matches_any(values: tuple[str, ...], identities: tuple[WatchedIdentity, ...
 
 
 def select_diverse(
-    scored: tuple[ScoredCandidate, ...], minimum_score: float = 1.0, target: int = 20
+    scored: tuple[ScoredCandidate, ...], minimum_score: float = 0.2, target: int = 20
 ) -> tuple[ScoredCandidate, ...]:
     """Select quality-qualified results with quotas and author/topic diversity."""
 
