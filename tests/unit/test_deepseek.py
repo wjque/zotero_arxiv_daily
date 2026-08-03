@@ -59,6 +59,24 @@ def test_deepseek_adapter_rejects_empty_completion_content() -> None:
         DeepSeekClient("test-key", transport=EmptyTransport()).propose([])
 
 
+def test_deepseek_structured_contract_uses_only_caller_supplied_records() -> None:
+    transport = _Transport()
+
+    DeepSeekClient("test-key", transport=transport, output_language="zh-CN").complete(
+        "judge-v1", [{"arxiv_id": "2401.00001", "summary": "public abstract"}]
+    )
+
+    assert transport.payload is not None
+    request = json.loads(transport.payload)
+    assert "judgments array" in request["messages"][0]["content"]
+    assert "public abstract" not in request["messages"][0]["content"]
+    assert json.loads(request["messages"][1]["content"]) == {
+        "records": [{"arxiv_id": "2401.00001", "summary": "public abstract"}]
+    }
+    with pytest.raises(ValueError, match="unsupported"):
+        DeepSeekClient("test-key", transport=transport).complete("other", [])
+
+
 @pytest.mark.parametrize(
     ("status_code", "message"),
     [
