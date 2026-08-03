@@ -6,6 +6,7 @@ from pytest import CaptureFixture, MonkeyPatch
 
 from zotero_arxiv_daily import cli
 from zotero_arxiv_daily.core.config import AppConfig
+from zotero_arxiv_daily.feedback.ledger import ActivationResult
 from zotero_arxiv_daily.site.models import PublishedRecommendationSet, write_published_set
 from zotero_arxiv_daily.zotero.models import ZoteroCollection
 
@@ -61,3 +62,24 @@ def test_corpus_list_collections_command_exposes_only_local_mapping_fields(
 
     assert exit_code == 0
     assert capsys.readouterr().out == "POSITIVE\tCurated positives\n"
+
+
+def test_feedback_activate_uses_configured_weekly_bounds(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], tmp_path: Path
+) -> None:
+    class _Ledger:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def activate_weekly(
+            self, now: object, *, interval_days: int, minimum_independent_papers: int
+        ) -> ActivationResult:
+            assert interval_days == 7
+            assert minimum_independent_papers == 3
+            return ActivationResult("insufficient-evidence", None, None)
+
+    monkeypatch.setattr(cli, "load_config", lambda **_: AppConfig())
+    monkeypatch.setattr(cli, "FeedbackLedgerStore", _Ledger)
+
+    assert cli.main(["feedback", "activate", "--state", str(tmp_path / "feedback.json")]) == 0
+    assert capsys.readouterr().out == "feedback activation: insufficient-evidence\n"

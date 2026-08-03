@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import os
 import tempfile
 from dataclasses import asdict, dataclass
@@ -92,6 +93,14 @@ class ActivationResult:
     decision: str
     active_version: str | None
     cutoff_at: datetime | None
+
+
+@dataclass(frozen=True, slots=True)
+class PositionOutcomeRate:
+    displayed_rank: int
+    impression_count: int
+    explicit_outcome_count: int
+    positive_outcome_count: int
 
 
 class FeedbackLedgerStore:
@@ -193,6 +202,59 @@ class FeedbackLedgerStore:
             else {}
         )
 
+    def position_outcomes(self) -> tuple[PositionOutcomeRate, ...]:
+        """Report explicit outcomes conditional on recorded impression position only."""
+
+        impressions: dict[str, FeedbackEvent] = {}
+        outcomes: dict[int, list[FeedbackEvent]] = {}
+        for event in self.events():
+            if event.event_type is FeedbackEventType.IMPRESSION:
+                impressions[event.paper_id] = event
+        for event in self.events():
+            if event.outcome is not None and event.paper_id in impressions:
+                rank = impressions[event.paper_id].displayed_rank
+                if rank is not None:
+                    outcomes.setdefault(rank, []).append(event)
+        counts: dict[int, int] = {}
+        for impression in impressions.values():
+            if impression.displayed_rank is not None:
+                counts[impression.displayed_rank] = counts.get(impression.displayed_rank, 0) + 1
+        return tuple(
+            PositionOutcomeRate(
+                rank,
+                count,
+                len(outcomes.get(rank, [])),
+                sum(
+                    event.outcome in {FeedbackOutcome.INTERESTED, FeedbackOutcome.WORTHWHILE}
+                    for event in outcomes.get(rank, [])
+                ),
+            )
+            for rank, count in sorted(counts.items())
+        )
+
+    def record_impressions(
+        self, batch_id: str, paper_ids: tuple[str, ...], occurred_at: datetime
+    ) -> tuple[int, int]:
+        """Append idempotent displayed-rank events after a successful publication only."""
+
+        instant = require_aware_utc(occurred_at, "occurred_at")
+        if not batch_id.strip() or len(set(paper_ids)) != len(paper_ids):
+            raise ValueError("impression batch identity is invalid")
+        return self.ingest(
+            tuple(
+                FeedbackEvent(
+                    "impression-"
+                    + hashlib.sha256(f"{batch_id}|{rank}|{paper_id}".encode()).hexdigest()[:24],
+                    FeedbackEventType.IMPRESSION,
+                    paper_id,
+                    instant,
+                    batch_id=batch_id,
+                    displayed_rank=rank,
+                )
+                for rank, paper_id in enumerate(paper_ids, start=1)
+            )
+        )
+
     def _read(self) -> dict[str, Any]:
         if not self.path.exists():
             return {}
@@ -271,7 +333,11 @@ def _aggregate(events: tuple[FeedbackEvent, ...], cutoff: datetime) -> FeedbackA
             latest[event.paper_id] = event
     adjustments = tuple(
         sorted(
-            (paper, _OUTCOME_WEIGHTS[event.outcome])
+            (
+                paper,
+                _OUTCOME_WEIGHTS[event.outcome]
+                * math.exp(-max((cutoff - event.occurred_at).total_seconds(), 0.0) / 7_776_000),
+            )
             for paper, event in latest.items()
             if event.outcome is not None
         )

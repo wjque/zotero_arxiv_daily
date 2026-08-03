@@ -9,6 +9,7 @@ from zotero_arxiv_daily.feedback.ledger import (
     FeedbackEventType,
     FeedbackLedgerStore,
     FeedbackOutcome,
+    PositionOutcomeRate,
 )
 
 _NOW = datetime(2026, 8, 3, 12, tzinfo=UTC)
@@ -66,3 +67,18 @@ def test_ledger_keeps_corrections_and_never_treats_impressions_as_negative(tmp_p
     assert store.ingest((correction,)) == (0, 1)
     assert store.activate_weekly(_NOW, minimum_independent_papers=1).decision == "activated"
     assert store.active_adjustments() == {"a": 0.6}
+
+
+def test_position_outcomes_only_count_explicit_outcomes_after_impressions(tmp_path: Path) -> None:
+    store = FeedbackLedgerStore(tmp_path / "feedback.json")
+    store.ingest(
+        (
+            FeedbackEvent(
+                "shown", FeedbackEventType.IMPRESSION, "a", _NOW, batch_id="run", displayed_rank=2
+            ),
+            _outcome("outcome", "a", FeedbackOutcome.INTERESTED),
+            _outcome("unseen", "b", FeedbackOutcome.NOT_INTERESTED),
+        )
+    )
+
+    assert store.position_outcomes() == (PositionOutcomeRate(2, 1, 1, 1),)
