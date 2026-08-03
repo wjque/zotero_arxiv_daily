@@ -88,7 +88,8 @@ def test_feedback_adjustment_is_visible_in_local_score_components() -> None:
 
     scored = pre_rank((item,), profile, datetime(2026, 8, 1, tzinfo=UTC), {"2401.00001": -0.5})
 
-    assert dict(scored[0].components)["feedback"] == -0.5
+    assert dict(scored[0].components)["feedback"] == 0
+    assert dict(scored[0].components)["negative_feedback"] == 0.5
 
 
 def test_watched_identity_matches_are_exact_inspectable_and_capped() -> None:
