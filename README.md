@@ -4,11 +4,9 @@ Zotero arXiv Daily is a local-first tool that builds a compact interest profile 
 Zotero library and uses it to produce a daily arXiv reading list. Raw Zotero records,
 notes, annotations, and PDF content remain local.
 
-The v0.1.2 implementation adds a meaningful profile snapshot timestamp, compact batch status, and
-deterministic recommendation ordering.
-v0.1.1 added production timing, preference signals, repeated-paper suppression, and deployment
-observability while preserving the local-first trust boundary. Current work is tracked in the
-active [v0.1.2 plan](docs/plans/v0.1.2-profile-snapshot-site-density.md).
+The v0.1.2 release adds a meaningful profile snapshot timestamp, compact batch status, and
+deterministic recommendation ordering. Current work is tracked in the active
+[v0.2.0 plan](docs/plans/v0.2.0-personalized-ranking-quality.md).
 
 ## Requirements
 
@@ -111,6 +109,30 @@ It writes `runtime/remote-profile.json` with owner-only permissions. The export 
 bounded topic terms and inferred arXiv categories; it excludes titles, abstracts, notes,
 annotations, identifiers, collections, and matching evidence. Unchanged local inputs reuse
 derived digest cache entries rather than regenerating them.
+
+## Local curated evaluation corpus
+
+The optional curated corpus is a local-only, evolving source of explicit judgments. It is not sent
+to GitHub, the static site, or the model provider. First synchronize Zotero, then list local
+collection keys and map one or more collections to positive and hard-negative labels:
+
+```bash
+uv run zotero-arxiv-daily corpus list-collections
+uv run zotero-arxiv-daily corpus import-zotero \
+  --positive-collection POSITIVE_COLLECTION_KEY \
+  --negative-collection NEGATIVE_COLLECTION_KEY
+```
+
+The importer writes the ignored, owner-only `runtime/curated-corpus.json` ledger. Re-running it is
+idempotent. Moving an item between mapped collections creates a correction event; removing it from
+all mapped collections creates an explicit `unlabeled` event, never a negative label. A Zotero DOI
+is normalized automatically. For an arXiv paper without a DOI, add a manual tag such as
+`ranking-paper-id:arxiv:2401.00001`. Optional structured reason tags use the form
+`ranking-reason:novel-insight`; keep free-text rationale in Zotero or another ignored local file.
+
+Every offline evaluation freezes a separate immutable snapshot with the corpus digest, cutoff,
+stable-anchor, rolling, temporal, and pairwise paper identities. Fewer than 40 independent labels
+is reported as provisional and cannot approve automatic tuning.
 
 To publish a validated exported profile to a GitHub Actions Secret, authenticate `gh` locally and
 set `ZAD_GITHUB_REPOSITORY`; the profile JSON is sent on standard input rather than in command-line
