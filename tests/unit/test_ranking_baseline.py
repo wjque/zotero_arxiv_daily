@@ -9,7 +9,6 @@ from pathlib import Path
 import pytest
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate, ArxivId
-from zotero_arxiv_daily.arxiv.storage import CANDIDATE_POOL_SCHEMA_VERSION
 from zotero_arxiv_daily.llm.cache import ProposalCache
 from zotero_arxiv_daily.llm.deepseek import DeepSeekClient
 from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity
@@ -92,7 +91,7 @@ def test_baseline_contract_freezes_release_schemas_budgets_and_prompt() -> None:
         "interest_profile": contract["schemas"]["interest_profile"],
         "remote_profile": contract["schemas"]["remote_profile"],
     } == BASELINE_SCHEMA_VERSIONS
-    assert contract["schemas"]["arxiv_candidate_pool"] == CANDIDATE_POOL_SCHEMA_VERSION
+    assert contract["schemas"]["arxiv_candidate_pool"] == 3
     assert contract["schemas"]["recommendation_history"] == HISTORY_SCHEMA_VERSION
     assert contract["schemas"]["recommendation_set"] == RECOMMENDATION_SET_SCHEMA_VERSION
     assert contract["schemas"]["run_manifest"] == RECOMMENDATION_RUN_MANIFEST_SCHEMA_VERSION

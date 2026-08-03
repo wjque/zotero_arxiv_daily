@@ -9,6 +9,7 @@ from zotero_arxiv_daily.core.errors import ConfigurationError
 
 _NEW = re.compile(r"(?P<id>\d{4}\.\d{4,5})(?:v(?P<revision>\d+))?$")
 _OLD = re.compile(r"(?P<id>[a-z-]+(?:\.[A-Z]{2})?/\d{7})(?:v(?P<revision>\d+))?$", re.I)
+_DOI = re.compile(r"^10\.\d{4,9}/\S+$", re.I)
 
 
 def parse_arxiv_id(value: str) -> ArxivId:
@@ -29,3 +30,14 @@ def public_urls(identifier: ArxivId) -> tuple[str, str]:
         f"https://arxiv.org/abs/{identifier.canonical}",
         f"https://arxiv.org/pdf/{identifier.canonical}",
     )
+
+
+def normalize_doi(value: str) -> str:
+    """Normalize a public DOI for exact provider identity matching."""
+
+    normalized = value.strip().casefold()
+    normalized = normalized.removeprefix("doi:").removeprefix("https://doi.org/")
+    normalized = normalized.removeprefix("http://doi.org/")
+    if not _DOI.fullmatch(normalized):
+        raise ConfigurationError("invalid DOI")
+    return normalized

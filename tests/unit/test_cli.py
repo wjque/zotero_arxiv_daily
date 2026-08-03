@@ -6,6 +6,7 @@ from pytest import CaptureFixture, MonkeyPatch
 
 from zotero_arxiv_daily import cli
 from zotero_arxiv_daily.core.config import AppConfig
+from zotero_arxiv_daily.evidence.models import PublicPaperEvidence
 from zotero_arxiv_daily.feedback.ledger import ActivationResult
 from zotero_arxiv_daily.site.models import PublishedRecommendationSet, write_published_set
 from zotero_arxiv_daily.zotero.models import ZoteroCollection
@@ -83,3 +84,36 @@ def test_feedback_activate_uses_configured_weekly_bounds(
 
     assert cli.main(["feedback", "activate", "--state", str(tmp_path / "feedback.json")]) == 0
     assert capsys.readouterr().out == "feedback activation: insufficient-evidence\n"
+
+
+def test_evidence_enrich_keeps_the_cli_projection_public_and_bounded(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], tmp_path: Path
+) -> None:
+    class _Enricher:
+        def __init__(self, client: object, cache: object) -> None:
+            self.client = client
+            self.cache = cache
+
+        def enrich(
+            self, candidates: tuple[object, ...], now: object, *, limit: int
+        ) -> tuple[PublicPaperEvidence, ...]:
+            assert candidates == ()
+            assert limit == 1
+            return ()
+
+    monkeypatch.setattr(cli, "load_config", lambda **_: AppConfig())
+    monkeypatch.setattr(cli, "OpenAlexEvidenceEnricher", _Enricher)
+
+    exit_code = cli.main(
+        [
+            "evidence",
+            "enrich",
+            "--candidate-state",
+            str(tmp_path / "missing.json"),
+            "--limit",
+            "1",
+        ]
+    )
+
+    assert exit_code == 0
+    assert capsys.readouterr().out == "public evidence enriched: 0 candidates, 0 context records\n"

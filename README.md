@@ -141,6 +141,29 @@ Every offline evaluation freezes a separate immutable snapshot with the corpus d
 stable-anchor, rolling, temporal, and pairwise paper identities. Fewer than 40 independent labels
 is reported as provisional and cannot approve automatic tuning.
 
+## Optional public evidence enrichment
+
+The optional evidence command enriches only the bounded public candidate pool. It sends an exact
+public DOI from the arXiv Atom record to OpenAlex; it never sends a Zotero record, profile facet,
+feedback event, collection name, note, annotation, or free-text rationale. Candidates without a DOI,
+unmatched records, provider errors, and rate limits remain explicit `unknown` evidence rather than a
+negative quality signal.
+
+```bash
+uv run zotero-arxiv-daily evidence enrich --limit 40
+```
+
+The command writes the ignored, owner-only `runtime/openalex-evidence.json` TTL cache. It is not part
+of the default recommendation workflow yet, so a provider outage cannot prevent a daily batch from
+using the previous usable output. OpenAlex context is restricted to citation/reference counts,
+open-access state, and retraction state; it is a weak contextual input, never a direct quality score.
+
+GitHub repository facts are available only through the internal adapter after an independently
+verified paper-to-repository association exists. The adapter refuses to search for or infer a
+repository from paper metadata, reads only bounded structured repository metadata, and never fetches
+README text or source files. Missing repositories remain `unknown` or `inapplicable`; they do not
+penalize theoretical or non-software work.
+
 ## Feedback activation cadence
 
 Browser feedback is imported as local append-only events. It can be collected on every scheduled

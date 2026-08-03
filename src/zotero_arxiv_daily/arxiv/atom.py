@@ -6,9 +6,9 @@ import re
 import xml.etree.ElementTree as ElementTree
 from datetime import UTC, datetime
 
-from zotero_arxiv_daily.arxiv.ids import parse_arxiv_id, public_urls
+from zotero_arxiv_daily.arxiv.ids import normalize_doi, parse_arxiv_id, public_urls
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
-from zotero_arxiv_daily.core.errors import ExternalServiceError
+from zotero_arxiv_daily.core.errors import ConfigurationError, ExternalServiceError
 
 _ATOM = "{http://www.w3.org/2005/Atom}"
 _ARXIV = "{http://arxiv.org/schemas/atom}"
@@ -64,6 +64,7 @@ def _parse_entry(entry: ElementTree.Element) -> ArxivCandidate:
         pdf_url,
         _collapse(_text(entry, f"{_ATOM}summary")),
         affiliations,
+        _optional_doi(entry),
     )
 
 
@@ -91,3 +92,13 @@ def _bounded_affiliation(value: str) -> str:
     if not collapsed or len(collapsed.encode("utf-8")) > _MAX_AFFILIATION_BYTES:
         raise ExternalServiceError("arXiv entry has an invalid affiliation value")
     return collapsed
+
+
+def _optional_doi(entry: ElementTree.Element) -> str | None:
+    value = entry.findtext(f"{_ARXIV}doi")
+    if value is None or not value.strip():
+        return None
+    try:
+        return normalize_doi(value)
+    except ConfigurationError as error:
+        raise ExternalServiceError("arXiv entry has an invalid DOI") from error
