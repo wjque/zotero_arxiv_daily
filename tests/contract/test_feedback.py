@@ -20,7 +20,7 @@ def _body(action: str = "interested") -> str:
     )
 
 
-def test_feedback_ingestion_is_idempotent_and_updates_predictable_adjustments(
+def test_feedback_ingestion_is_idempotent_and_does_not_advance_weekly_adjustments(
     tmp_path: Path,
 ) -> None:
     store = FeedbackStateStore(tmp_path / "feedback.json")
@@ -30,7 +30,7 @@ def test_feedback_ingestion_is_idempotent_and_updates_predictable_adjustments(
 
     assert first.action_count == 1
     assert repeated.duplicate_issues == 1
-    assert store.adjustments() == {"2401.00001": -0.5}
+    assert store.adjustments() == {}
 
 
 def test_malformed_issue_cannot_advance_processed_state(tmp_path: Path) -> None:

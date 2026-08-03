@@ -3,12 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
-import tempfile
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 
 from zotero_arxiv_daily.core.errors import ExternalServiceError
+from zotero_arxiv_daily.feedback.ledger import (
+    FeedbackEvent,
+    FeedbackEventType,
+    FeedbackLedgerStore,
+    FeedbackOutcome,
+)
 
 _ACTIONS = {"interested": 0.25, "not_interested": -0.5, "save_for_later": 0.1, "read": 0.05}
 
@@ -34,61 +39,26 @@ class FeedbackStateStore:
         self.path = path
 
     def adjustments(self) -> dict[str, float]:
-        values = self._read().get("adjustments", {})
-        return (
-            {key: float(value) for key, value in values.items()}
-            if isinstance(values, dict) and all(isinstance(key, str) for key in values)
-            else {}
-        )
+        return FeedbackLedgerStore(self.path).active_adjustments()
 
     def ingest(self, issues: tuple[tuple[int, str], ...]) -> FeedbackIngestionResult:
         """Validate all new issues before atomically marking any of them processed."""
 
-        state = self._read()
-        raw_processed = state.get("processed_issue_numbers", [])
-        if not isinstance(raw_processed, list) or not all(
-            isinstance(value, int) for value in raw_processed
-        ):
-            raise ExternalServiceError("feedback state has invalid processed Issue IDs")
-        processed = set(raw_processed)
-        new_issues = tuple(issue for issue in issues if issue[0] not in processed)
-        actions = tuple(action for _, body in new_issues for action in parse_feedback(body))
-        adjustments = self.adjustments()
-        for action in actions:
-            adjustments[action.arxiv_id] = (
-                adjustments.get(action.arxiv_id, 0.0) + _ACTIONS[action.action]
+        parsed = tuple((number, parse_feedback(body)) for number, body in issues)
+        ledger_issues = tuple(
+            (
+                number,
+                tuple(
+                    _event_from_action(number, index, action)
+                    for index, action in enumerate(actions)
+                ),
             )
-        payload = {
-            "schema_version": 1,
-            "processed_issue_numbers": sorted(processed | {number for number, _ in new_issues}),
-            "adjustments": dict(sorted(adjustments.items())),
-        }
-        self._write(payload)
-        return FeedbackIngestionResult(len(new_issues), len(actions), len(issues) - len(new_issues))
-
-    def _read(self) -> dict[str, object]:
-        if not self.path.is_file():
-            return {}
-        try:
-            value = json.loads(self.path.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as error:
-            raise ExternalServiceError("feedback state is unreadable") from error
-        return value if isinstance(value, dict) else {}
-
-    def _write(self, payload: dict[str, object]) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        descriptor, temporary_name = tempfile.mkstemp(
-            prefix=f".{self.path.name}.", dir=self.path.parent
+            for number, actions in parsed
         )
-        temporary = Path(temporary_name)
-        try:
-            with os.fdopen(descriptor, "w", encoding="utf-8") as output:
-                json.dump(payload, output, separators=(",", ":"))
-                output.flush()
-                os.fsync(output.fileno())
-            os.replace(temporary, self.path)
-        finally:
-            temporary.unlink(missing_ok=True)
+        issue_count, action_count, duplicate_issues = FeedbackLedgerStore(self.path).ingest_issues(
+            ledger_issues
+        )
+        return FeedbackIngestionResult(issue_count, action_count, duplicate_issues)
 
 
 def parse_feedback(body: str) -> tuple[FeedbackAction, ...]:
@@ -136,3 +106,18 @@ def read_github_issues(path: Path) -> tuple[tuple[int, str], ...]:
         return issues
     except (OSError, KeyError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise ExternalServiceError("GitHub Issue input is invalid") from error
+
+
+def _event_from_action(issue_number: int, index: int, action: FeedbackAction) -> FeedbackEvent:
+    try:
+        occurred_at = datetime.fromisoformat(action.updated_at.replace("Z", "+00:00"))
+        outcome = FeedbackOutcome(action.action)
+    except ValueError as error:
+        raise ExternalServiceError("feedback Issue has an invalid timestamp or action") from error
+    return FeedbackEvent(
+        f"issue-{issue_number}-{index}",
+        FeedbackEventType.OUTCOME,
+        action.arxiv_id,
+        occurred_at,
+        outcome,
+    )

@@ -126,6 +126,34 @@ class FeedbackLedgerStore:
         self._write(state)
         return added, duplicates
 
+    def ingest_issues(
+        self, issues: tuple[tuple[int, tuple[FeedbackEvent, ...]], ...]
+    ) -> tuple[int, int, int]:
+        """Atomically append parsed Issue events and mark their Issue IDs consumed."""
+
+        state = self._state()
+        processed = state["processed"]
+        if not isinstance(processed, list) or not all(isinstance(item, int) for item in processed):
+            raise ExternalServiceError("feedback processed Issue IDs are invalid")
+        known_processed = set(processed)
+        new = tuple(issue for issue in issues if issue[0] not in known_processed)
+        known = {event.event_id: event for event in state["events"]}
+        added = 0
+        for _, events in new:
+            for event in events:
+                if event.event_id in known:
+                    raise ExternalServiceError("new feedback Issue contains an existing event ID")
+                if event.supersedes_event_id and event.supersedes_event_id not in known:
+                    raise ExternalServiceError("feedback correction references an unknown event")
+                known[event.event_id] = event
+                added += 1
+        state["events"] = tuple(
+            sorted(known.values(), key=lambda item: (item.occurred_at, item.event_id))
+        )
+        state["processed"] = sorted(known_processed | {number for number, _ in new})
+        self._write(state)
+        return len(new), added, len(issues) - len(new)
+
     def activate_weekly(
         self, now: datetime, *, interval_days: int = 7, minimum_independent_papers: int = 3
     ) -> ActivationResult:
@@ -156,8 +184,13 @@ class FeedbackLedgerStore:
     def active_adjustments(self) -> dict[str, float]:
         state = self._state()
         raw = state["activation"].get("adjustments", {})
+        if isinstance(raw, dict) and raw:
+            return {str(key): float(value) for key, value in raw.items()}
+        legacy = state["legacy_adjustments"]
         return (
-            {str(key): float(value) for key, value in raw.items()} if isinstance(raw, dict) else {}
+            {str(key): float(value) for key, value in legacy.items()}
+            if isinstance(legacy, dict)
+            else {}
         )
 
     def _read(self) -> dict[str, Any]:
@@ -174,18 +207,29 @@ class FeedbackLedgerStore:
     def _state(self) -> dict[str, Any]:
         value = self._read()
         if not value:
-            return {"events": (), "legacy_adjustments": {}, "activation": {}}
+            return {"events": (), "legacy_adjustments": {}, "activation": {}, "processed": []}
         if value.get("schema_version") == 1:
             adjustments = value.get("adjustments", {})
             if not isinstance(adjustments, dict):
                 raise ExternalServiceError("legacy feedback adjustments are invalid")
-            return {"events": (), "legacy_adjustments": adjustments, "activation": {}}
+            processed = value.get("processed_issue_numbers", [])
+            if not isinstance(processed, list) or not all(
+                isinstance(item, int) for item in processed
+            ):
+                raise ExternalServiceError("legacy feedback Issue IDs are invalid")
+            return {
+                "events": (),
+                "legacy_adjustments": adjustments,
+                "activation": {},
+                "processed": processed,
+            }
         if value.get("schema_version") != FEEDBACK_LEDGER_SCHEMA_VERSION:
             raise ExternalServiceError("unsupported feedback ledger schema")
         return {
             "events": _state_events(value),
             "legacy_adjustments": value.get("legacy_adjustments", {}),
             "activation": value.get("activation", {}),
+            "processed": value.get("processed_issue_numbers", []),
         }
 
     def _write(self, state: dict[str, Any]) -> None:
@@ -272,6 +316,7 @@ def _encode_state(state: dict[str, Any]) -> dict[str, object]:
     return {
         "schema_version": FEEDBACK_LEDGER_SCHEMA_VERSION,
         "legacy_adjustments": state["legacy_adjustments"],
+        "processed_issue_numbers": state["processed"],
         "events": [
             {
                 **asdict(event),
