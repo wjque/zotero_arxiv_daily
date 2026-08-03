@@ -24,6 +24,7 @@ from zotero_arxiv_daily.evaluation.corpus import (
     ZoteroCorpusItem,
 )
 from zotero_arxiv_daily.feedback.ingest import FeedbackStateStore, read_github_issues
+from zotero_arxiv_daily.feedback.ledger import FeedbackLedgerStore
 from zotero_arxiv_daily.llm.cache import ProposalCache
 from zotero_arxiv_daily.llm.deepseek import DeepSeekClient
 from zotero_arxiv_daily.pipeline.recommend import run_recommendation
@@ -107,6 +108,19 @@ def build_parser() -> argparse.ArgumentParser:
     )
     feedback_ingest_parser.add_argument("--input", type=Path, required=True)
     feedback_ingest_parser.add_argument(
+        "--state", type=Path, default=Path("runtime/feedback-state.json")
+    )
+    feedback_activate_parser = feedback_commands.add_parser(
+        "activate", help="Atomically evaluate the next eligible weekly feedback snapshot"
+    )
+    feedback_activate_parser.add_argument(
+        "--state", type=Path, default=Path("runtime/feedback-state.json")
+    )
+    feedback_impressions_parser = feedback_commands.add_parser(
+        "record-impressions", help="Record successful publication exposure locally"
+    )
+    feedback_impressions_parser.add_argument("--input", type=Path, required=True)
+    feedback_impressions_parser.add_argument(
         "--state", type=Path, default=Path("runtime/feedback-state.json")
     )
     corpus_parser = subcommands.add_parser(
@@ -249,6 +263,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{feedback_result.action_count} actions, "
                 f"{feedback_result.duplicate_issues} duplicates"
             )
+            return 0
+        if args.command == "feedback" and args.feedback_command == "activate":
+            activation = FeedbackLedgerStore(args.state).activate_weekly(
+                datetime.now(UTC),
+                interval_days=config.feedback_activation_interval_days,
+                minimum_independent_papers=config.feedback_minimum_independent_papers,
+            )
+            print(f"feedback activation: {activation.decision}")
+            return 0
+        if args.command == "feedback" and args.feedback_command == "record-impressions":
+            published = read_published_set(args.input)
+            completed = published.generation_completed_at or published.generation_started_at
+            occurred_at = datetime.fromisoformat(completed)
+            batch_id = f"published-{published.generation_started_at}"
+            added, duplicates = FeedbackLedgerStore(args.state).record_impressions(
+                batch_id,
+                tuple(record.arxiv_id for record in published.recommendations),
+                occurred_at,
+            )
+            print(f"feedback impressions: {added} recorded, {duplicates} duplicates")
             return 0
         if args.command == "corpus" and args.corpus_command == "import-zotero":
             store = ZoteroStore(args.database or Path(config.local_database_path))

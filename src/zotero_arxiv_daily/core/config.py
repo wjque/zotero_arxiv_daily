@@ -31,6 +31,8 @@ _ENVIRONMENT_KEYS = {
     "ZAD_INSTITUTION_PREFERENCE_BONUS": "institution_preference_bonus",
     "ZAD_IDENTITY_BONUS_CAP": "identity_bonus_cap",
     "ZAD_RECOMMENDATION_SUPPRESSION_DAYS": "recommendation_suppression_days",
+    "ZAD_FEEDBACK_ACTIVATION_INTERVAL_DAYS": "feedback_activation_interval_days",
+    "ZAD_FEEDBACK_MINIMUM_INDEPENDENT_PAPERS": "feedback_minimum_independent_papers",
 }
 _FILE_KEYS = frozenset(_ENVIRONMENT_KEYS.values()) | {"watched_authors", "watched_institutions"}
 
@@ -63,6 +65,8 @@ class AppConfig:
     institution_preference_bonus: float = 0.5
     identity_bonus_cap: float = 1.0
     recommendation_suppression_days: int = 14
+    feedback_activation_interval_days: int = 7
+    feedback_minimum_independent_papers: int = 3
 
     def validate(self) -> None:
         """Validate values that are safe to check before an operation starts."""
@@ -90,6 +94,12 @@ class AppConfig:
             raise ConfigurationError("identity_bonus_cap must be between zero and one")
         if not 1 <= self.recommendation_suppression_days <= 30:
             raise ConfigurationError("recommendation_suppression_days must be between 1 and 30")
+        if not 7 <= self.feedback_activation_interval_days <= 28:
+            raise ConfigurationError("feedback_activation_interval_days must be between 7 and 28")
+        if not 1 <= self.feedback_minimum_independent_papers <= 100:
+            raise ConfigurationError(
+                "feedback_minimum_independent_papers must be between 1 and 100"
+            )
 
 
 def load_config(
@@ -149,6 +159,16 @@ def load_config(
             "recommendation_suppression_days",
             defaults.recommendation_suppression_days,
         ),
+        feedback_activation_interval_days=_int_value(
+            normalized_values,
+            "feedback_activation_interval_days",
+            defaults.feedback_activation_interval_days,
+        ),
+        feedback_minimum_independent_papers=_int_value(
+            normalized_values,
+            "feedback_minimum_independent_papers",
+            defaults.feedback_minimum_independent_papers,
+        ),
     )
     config.validate()
     return config
@@ -199,6 +219,8 @@ def _normalize_values(values: Mapping[str, object]) -> dict[str, object]:
         "institution_preference_bonus",
         "identity_bonus_cap",
         "recommendation_suppression_days",
+        "feedback_activation_interval_days",
+        "feedback_minimum_independent_papers",
     ):
         value = normalized.get(name)
         if isinstance(value, str):

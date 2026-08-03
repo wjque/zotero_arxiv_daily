@@ -68,6 +68,7 @@ jobs:
           printf '%s' "$REMOTE_PROFILE" > runtime/remote-profile.json
           gh issue list --repo "$GITHUB_REPOSITORY" --label zotero-feedback --state open --json number,body > runtime/issues.json
           uv run zotero-arxiv-daily feedback ingest --input runtime/issues.json
+          uv run zotero-arxiv-daily feedback activate
           uv run zotero-arxiv-daily arxiv retrieve --profile runtime/remote-profile.json --state runtime/arxiv-state.json
           ZAD_DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" uv run zotero-arxiv-daily recommend run --profile runtime/remote-profile.json --candidate-state runtime/arxiv-state.json --workflow-run-id "${{ github.run_id }}" --workflow-run-attempt "${{ github.run_attempt }}" --source-revision "${{ github.sha }}"
           ZAD_PAGES_PASSPHRASE="$PAGES_PASSPHRASE" uv run zotero-arxiv-daily site build
@@ -87,6 +88,7 @@ jobs:
       - name: Persist successful run state
         if: steps.generation-window.outputs.decision == 'allowed'
         run: |
+          uv run zotero-arxiv-daily feedback record-impressions --input runtime/publishable-recommendations.json
           git worktree remove runtime/state --force 2>/dev/null || true
           if git show-ref --verify --quiet refs/remotes/origin/state; then
             git worktree add -B state runtime/state origin/state

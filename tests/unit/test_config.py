@@ -9,7 +9,10 @@ from zotero_arxiv_daily.core.errors import ConfigurationError
 
 
 def test_default_recommendation_output_language_is_english() -> None:
-    assert load_config(environment={}).output_language == "en"
+    config = load_config(environment={})
+
+    assert config.output_language == "en"
+    assert config.feedback_activation_interval_days == 7
 
 
 def test_configuration_precedence_is_defaults_file_environment_then_cli(tmp_path: Path) -> None:
@@ -54,6 +57,8 @@ def test_configuration_validates_model_timeout_and_candidate_limit() -> None:
     assert config.recommendation_candidate_limit == 40
     with pytest.raises(ConfigurationError, match="candidate_limit"):
         load_config(environment={"ZAD_RECOMMENDATION_CANDIDATE_LIMIT": "39"})
+    with pytest.raises(ConfigurationError, match="feedback_activation_interval_days"):
+        load_config(environment={"ZAD_FEEDBACK_ACTIVATION_INTERVAL_DAYS": "6"})
 
 
 def test_configuration_loads_structured_bounded_watchlists(tmp_path: Path) -> None:

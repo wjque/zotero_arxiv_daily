@@ -141,6 +141,14 @@ Every offline evaluation freezes a separate immutable snapshot with the corpus d
 stable-anchor, rolling, temporal, and pairwise paper identities. Fewer than 40 independent labels
 is reported as provisional and cannot approve automatic tuning.
 
+## Feedback activation cadence
+
+Browser feedback is imported as local append-only events. It can be collected on every scheduled
+run, while ranking adjustments activate only after a guarded weekly evaluation (seven days by
+default). The previous successful snapshot remains active after empty, insufficient, or failed
+weeks. `ZAD_FEEDBACK_ACTIVATION_INTERVAL_DAYS` and `ZAD_FEEDBACK_MINIMUM_INDEPENDENT_PAPERS` adjust
+the local operational bounds; no feedback prose is sent through GitHub Issues or published output.
+
 To publish a validated exported profile to a GitHub Actions Secret, authenticate `gh` locally and
 set `ZAD_GITHUB_REPOSITORY`; the profile JSON is sent on standard input rather than in command-line
 arguments:
