@@ -37,6 +37,16 @@ class ZoteroCollection:
 
 
 @dataclass(frozen=True, slots=True)
+class ZoteroCorpusSource:
+    """Minimal local item fields used by a separately owned curated-corpus importer."""
+
+    item_key: str
+    identifiers: tuple[str, ...]
+    collections: tuple[str, ...]
+    tags: tuple[str, ...]
+
+
+@dataclass(frozen=True, slots=True)
 class SyncBatch:
     library_version: int
     items: tuple[ZoteroItem, ...]

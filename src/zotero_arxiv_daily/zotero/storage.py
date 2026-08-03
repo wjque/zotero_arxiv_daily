@@ -11,7 +11,13 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 
-from zotero_arxiv_daily.zotero.models import SyncBatch, SyncResult, ZoteroItem
+from zotero_arxiv_daily.zotero.models import (
+    SyncBatch,
+    SyncResult,
+    ZoteroCollection,
+    ZoteroCorpusSource,
+    ZoteroItem,
+)
 
 _SCHEMA_VERSION = 2
 
@@ -144,6 +150,45 @@ class ZoteroStore:
                     str(item).casefold() for item in value.get("identifiers", []) if item
                 )
         return frozenset(identifiers)
+
+    def corpus_sources(self) -> tuple[ZoteroCorpusSource, ...]:
+        """Return local-only item metadata for an explicit curated-corpus mapping."""
+
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT key, payload FROM items WHERE is_seed = 1 ORDER BY key"
+            ).fetchall()
+        sources: list[ZoteroCorpusSource] = []
+        for key, payload in rows:
+            value = json.loads(str(payload))
+            if not isinstance(value, dict):
+                raise ValueError("stored Zotero item payload is invalid")
+            tags = value.get("tags", [])
+            sources.append(
+                ZoteroCorpusSource(
+                    str(key),
+                    tuple(str(item) for item in value.get("identifiers", []) if item),
+                    tuple(str(item) for item in value.get("collections", []) if item),
+                    tuple(
+                        str(item[0])
+                        for item in tags
+                        if isinstance(item, list | tuple) and len(item) == 2 and item[0]
+                    ),
+                )
+            )
+        return tuple(sources)
+
+    def collections(self) -> tuple[ZoteroCollection, ...]:
+        """Return local collection identifiers and names for explicit corpus mapping."""
+
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT key, version, name, parent_key FROM collections ORDER BY key"
+            ).fetchall()
+        return tuple(
+            ZoteroCollection(str(key), int(version), str(name), str(parent) if parent else None)
+            for key, version, name, parent in rows
+        )
 
     def load_digest(self, cache_key: str, prompt_version: str) -> str | None:
         """Return a local derived digest by content hash and deterministic prompt version."""

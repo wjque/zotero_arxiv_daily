@@ -18,6 +18,11 @@ from zotero_arxiv_daily.core.config import load_config
 from zotero_arxiv_daily.core.errors import ApplicationError
 from zotero_arxiv_daily.core.time import generation_decision
 from zotero_arxiv_daily.doctor import Diagnostic, doctor_exit_code, run_doctor
+from zotero_arxiv_daily.evaluation.corpus import (
+    CorpusStore,
+    CuratedCorpusMapping,
+    ZoteroCorpusItem,
+)
 from zotero_arxiv_daily.feedback.ingest import FeedbackStateStore, read_github_issues
 from zotero_arxiv_daily.llm.cache import ProposalCache
 from zotero_arxiv_daily.llm.deepseek import DeepSeekClient
@@ -99,6 +104,23 @@ def build_parser() -> argparse.ArgumentParser:
     feedback_ingest_parser.add_argument("--input", type=Path, required=True)
     feedback_ingest_parser.add_argument(
         "--state", type=Path, default=Path("runtime/feedback-state.json")
+    )
+    corpus_parser = subcommands.add_parser(
+        "corpus", help="Import a local curated Zotero collection into the evaluation ledger"
+    )
+    corpus_commands = corpus_parser.add_subparsers(dest="corpus_command", required=True)
+    corpus_list_parser = corpus_commands.add_parser(
+        "list-collections", help="List local collection keys for an explicit corpus mapping"
+    )
+    corpus_list_parser.add_argument("--database", type=Path)
+    corpus_import_parser = corpus_commands.add_parser(
+        "import-zotero", help="Import explicit positive and negative collection keys"
+    )
+    corpus_import_parser.add_argument("--database", type=Path)
+    corpus_import_parser.add_argument("--positive-collection", action="append", required=True)
+    corpus_import_parser.add_argument("--negative-collection", action="append", required=True)
+    corpus_import_parser.add_argument(
+        "--state", type=Path, default=Path("runtime/curated-corpus.json")
     )
     arxiv_parser = subcommands.add_parser("arxiv", help="Retrieve public arXiv candidate metadata")
     arxiv_commands = arxiv_parser.add_subparsers(dest="arxiv_command", required=True)
@@ -222,6 +244,30 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{feedback_result.action_count} actions, "
                 f"{feedback_result.duplicate_issues} duplicates"
             )
+            return 0
+        if args.command == "corpus" and args.corpus_command == "import-zotero":
+            store = ZoteroStore(args.database or Path(config.local_database_path))
+            mapping = CuratedCorpusMapping(
+                tuple(args.positive_collection), tuple(args.negative_collection)
+            )
+            items = tuple(
+                ZoteroCorpusItem(
+                    source.item_key, source.identifiers, source.collections, source.tags
+                )
+                for source in store.corpus_sources()
+            )
+            corpus_result = CorpusStore(args.state).import_zotero(items, mapping, datetime.now(UTC))
+            print(
+                "curated corpus imported: "
+                f"{corpus_result.added_events} events, "
+                f"{corpus_result.unlabeled_events} unlabel corrections, "
+                f"{corpus_result.skipped_items} skipped, revision {corpus_result.revision}"
+            )
+            return 0
+        if args.command == "corpus" and args.corpus_command == "list-collections":
+            store = ZoteroStore(args.database or Path(config.local_database_path))
+            for collection in store.collections():
+                print(f"{collection.key}\t{collection.name}")
             return 0
         if args.command == "arxiv" and args.arxiv_command == "retrieve":
             profile = read_remote_profile(args.profile)
