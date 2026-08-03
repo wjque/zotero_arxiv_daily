@@ -23,6 +23,8 @@ from zotero_arxiv_daily.evaluation.corpus import (
     CuratedCorpusMapping,
     ZoteroCorpusItem,
 )
+from zotero_arxiv_daily.evidence.openalex import OpenAlexClient, OpenAlexEvidenceEnricher
+from zotero_arxiv_daily.evidence.storage import EvidenceCache
 from zotero_arxiv_daily.feedback.ingest import FeedbackStateStore, read_github_issues
 from zotero_arxiv_daily.feedback.ledger import FeedbackLedgerStore
 from zotero_arxiv_daily.llm.cache import ProposalCache
@@ -140,6 +142,20 @@ def build_parser() -> argparse.ArgumentParser:
     corpus_import_parser.add_argument(
         "--state", type=Path, default=Path("runtime/curated-corpus.json")
     )
+    evidence_parser = subcommands.add_parser(
+        "evidence", help="Enrich bounded public DOI metadata without local-profile data"
+    )
+    evidence_commands = evidence_parser.add_subparsers(dest="evidence_command", required=True)
+    evidence_enrich_parser = evidence_commands.add_parser(
+        "enrich", help="Cache optional OpenAlex context for the top public candidates"
+    )
+    evidence_enrich_parser.add_argument(
+        "--candidate-state", type=Path, default=Path("runtime/arxiv-state.json")
+    )
+    evidence_enrich_parser.add_argument(
+        "--cache", type=Path, default=Path("runtime/openalex-evidence.json")
+    )
+    evidence_enrich_parser.add_argument("--limit", type=int, default=40)
     arxiv_parser = subcommands.add_parser("arxiv", help="Retrieve public arXiv candidate metadata")
     arxiv_commands = arxiv_parser.add_subparsers(dest="arxiv_command", required=True)
     arxiv_retrieve_parser = arxiv_commands.add_parser(
@@ -307,6 +323,21 @@ def main(argv: Sequence[str] | None = None) -> int:
             store = ZoteroStore(args.database or Path(config.local_database_path))
             for collection in store.collections():
                 print(f"{collection.key}\t{collection.name}")
+            return 0
+        if args.command == "evidence" and args.evidence_command == "enrich":
+            evidence = OpenAlexEvidenceEnricher(OpenAlexClient(), EvidenceCache(args.cache)).enrich(
+                ArxivStateStore(args.candidate_state).candidates(),
+                datetime.now(UTC),
+                limit=args.limit,
+            )
+            available = sum(
+                item.context is not None
+                and item.context.open_access.availability.value == "available"
+                for item in evidence
+            )
+            print(
+                f"public evidence enriched: {len(evidence)} candidates, {available} context records"
+            )
             return 0
         if args.command == "arxiv" and args.arxiv_command == "retrieve":
             profile = read_remote_profile(args.profile)

@@ -24,6 +24,7 @@ class ArxivCandidate:
     pdf_url: str
     summary: str
     affiliations: tuple[str, ...] = ()
+    doi: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

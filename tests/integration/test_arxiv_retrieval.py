@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
@@ -183,3 +184,30 @@ def test_candidate_pool_is_bounded_to_newest_thousand_entries(tmp_path: Path) ->
     assert len(retained) == 1000
     assert retained[0].arxiv_id.canonical == "2401.01000"
     assert all(item.arxiv_id.canonical != "2401.00000" for item in retained)
+
+
+def test_candidate_state_v3_reader_leaves_unknown_doi_unset(tmp_path: Path) -> None:
+    path = tmp_path / "arxiv-state.json"
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 3,
+                "candidates": [
+                    {
+                        "arxiv_id": "2401.01234",
+                        "revision": 1,
+                        "title": "Legacy public paper",
+                        "authors": [],
+                        "categories": ["cs.LG"],
+                        "published": "2026-08-01T00:00:00+00:00",
+                        "updated": "2026-08-01T00:00:00+00:00",
+                        "summary": "Legacy summary",
+                        "affiliations": [],
+                    }
+                ],
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    assert ArxivStateStore(path).candidates()[0].doi is None

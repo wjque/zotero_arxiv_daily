@@ -27,6 +27,16 @@ def test_parse_atom_feed_preserves_bounded_explicit_affiliations() -> None:
     assert parse_feed(payload)[0].affiliations == ("MIT",)
 
 
+def test_parse_atom_feed_preserves_optional_normalized_doi() -> None:
+    payload = _FEED.replace(
+        b'<category term="cs.LG"/>',
+        b'<arxiv:doi xmlns:arxiv="http://arxiv.org/schemas/atom">DOI:10.1000/Example</arxiv:doi>'
+        b'<category term="cs.LG"/>',
+    )
+
+    assert parse_feed(payload)[0].doi == "10.1000/example"
+
+
 def test_parse_atom_feed_rejects_oversized_affiliation() -> None:
     affiliation = b"x" * 257
     payload = _FEED.replace(

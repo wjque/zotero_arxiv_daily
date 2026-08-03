@@ -9,11 +9,11 @@ from dataclasses import asdict
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
-from zotero_arxiv_daily.arxiv.ids import parse_arxiv_id, public_urls
+from zotero_arxiv_daily.arxiv.ids import normalize_doi, parse_arxiv_id, public_urls
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate, ArxivId, RetrievalCheckpoint
 from zotero_arxiv_daily.core.errors import ExternalServiceError
 
-CANDIDATE_POOL_SCHEMA_VERSION = 3
+CANDIDATE_POOL_SCHEMA_VERSION = 4
 CANDIDATE_POOL_RETENTION_DAYS = 30
 CANDIDATE_POOL_LIMIT = 1000
 
@@ -43,7 +43,7 @@ class ArxivStateStore:
 
         payload = self._read()
         schema_version = payload.get("schema_version", 1)
-        if schema_version not in {1, 2, CANDIDATE_POOL_SCHEMA_VERSION}:
+        if schema_version not in {1, 2, 3, CANDIDATE_POOL_SCHEMA_VERSION}:
             raise ExternalServiceError("arXiv candidate state uses an unsupported schema")
         values = payload.get("candidates", [])
         if not isinstance(values, list):
@@ -131,6 +131,9 @@ def _candidate_from_payload(value: object) -> ArxivCandidate:
         isinstance(item, str) for item in affiliations
     ):
         raise ValueError
+    doi_value = value.get("doi")
+    if doi_value is not None and not isinstance(doi_value, str):
+        raise ValueError
     return ArxivCandidate(
         identifier,
         str(value["title"]),
@@ -142,6 +145,7 @@ def _candidate_from_payload(value: object) -> ArxivCandidate:
         pdf_url,
         str(value["summary"]),
         tuple(affiliations),
+        normalize_doi(doi_value) if doi_value else None,
     )
 
 
