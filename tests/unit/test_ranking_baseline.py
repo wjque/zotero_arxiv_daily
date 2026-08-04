@@ -26,7 +26,6 @@ from zotero_arxiv_daily.ranking.models import (
     ScoredCandidate,
 )
 from zotero_arxiv_daily.security.encryption import ENCRYPTION_SCHEMA_VERSION
-from zotero_arxiv_daily.site.models import PUBLISHABLE_SCHEMA_VERSION
 from zotero_arxiv_daily.storage.recommendation_history import HISTORY_SCHEMA_VERSION
 
 _BASELINE_PATH = Path("docs/baselines/v0.1.2.json")
@@ -95,7 +94,7 @@ def test_baseline_contract_freezes_release_schemas_budgets_and_prompt() -> None:
     assert contract["schemas"]["recommendation_history"] == HISTORY_SCHEMA_VERSION
     assert contract["schemas"]["recommendation_set"] == RECOMMENDATION_SET_SCHEMA_VERSION
     assert contract["schemas"]["run_manifest"] == RECOMMENDATION_RUN_MANIFEST_SCHEMA_VERSION
-    assert contract["schemas"]["publishable_site"] == PUBLISHABLE_SCHEMA_VERSION
+    assert contract["schemas"]["publishable_site"] == 3
     assert contract["schemas"]["encryption_envelope"] == ENCRYPTION_SCHEMA_VERSION
     assert transport.system_prompt is not None
     assert (

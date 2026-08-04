@@ -38,3 +38,5 @@ class RetrievalResult:
     candidates: tuple[ArxivCandidate, ...]
     checkpoint: RetrievalCheckpoint
     request_count: int
+    degraded: bool = False
+    degraded_reason: str | None = None

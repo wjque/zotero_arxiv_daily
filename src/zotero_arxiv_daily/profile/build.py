@@ -10,6 +10,7 @@ from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 
+from zotero_arxiv_daily.arxiv.categories import adjacent_categories
 from zotero_arxiv_daily.core.errors import ConfigurationError
 from zotero_arxiv_daily.profile.models import (
     INTEREST_PROFILE_SCHEMA_VERSION,
@@ -48,12 +49,6 @@ _CATEGORY_HINTS = {
     "statistical": "stat.ML",
     "neural": "cs.NE",
     "algorithm": "cs.DS",
-}
-_ADJACENT = {
-    "cs.LG": ("stat.ML", "cs.AI"),
-    "cs.CL": ("cs.AI",),
-    "cs.CV": ("cs.LG",),
-    "quant-ph": ("cond-mat.str-el",),
 }
 _FACET_HINTS = {
     "domain": {
@@ -155,9 +150,16 @@ def project_remote(profile: InterestProfile, payload_budget: int = 30 * 1024) ->
 
     topics = tuple(term for term, _ in profile.terms[:30] if _safe_term(term))
     core = tuple(category for category, _, _ in profile.categories[:6])
-    adjacent = tuple(sorted({value for category in core for value in _ADJACENT.get(category, ())}))[
-        :6
-    ]
+    adjacent = tuple(
+        sorted(
+            {
+                value
+                for category in core
+                for value in adjacent_categories(category)
+                if value not in core
+            }
+        )
+    )[:6]
     remote = RemoteProfile(
         REMOTE_PROFILE_SCHEMA_VERSION,
         profile.source_library_version,

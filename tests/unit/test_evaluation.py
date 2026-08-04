@@ -221,12 +221,13 @@ def test_metrics_report_core_values_pairwise_accuracy_and_conservative_compariso
     assert candidate.precision_at_k == pytest.approx(0.5)
     assert candidate.negative_rate_at_k == pytest.approx(0.5)
     assert candidate.pairwise_accuracy == 1.0
+    assert candidate.candidate_overlap == 3
     assert candidate.source_coverage_at_k == 1
     assert candidate.category_coverage_at_k == 1
     assert candidate.provisional
     assert report.ndcg_delta is not None and report.ndcg_delta > 0
     assert not report.eligible_for_tuning
-    assert "fewer than 40 independent labels; result is provisional" in report.reasons
+    assert "few overlapping labels; metric uncertainty is high" in report.warnings
     frozen_metrics = evaluate_snapshot_ranking(
         (
             RankedPaper("arxiv:1", 0.9),
@@ -238,6 +239,7 @@ def test_metrics_report_core_values_pairwise_accuracy_and_conservative_compariso
         k=2,
     )
     assert frozen_metrics.evaluated_labels == 1
+    assert frozen_metrics.candidate_overlap == 1
 
 
 def test_metrics_are_explicitly_insufficient_without_labels(tmp_path: Path) -> None:
@@ -246,3 +248,47 @@ def test_metrics_are_explicitly_insufficient_without_labels(tmp_path: Path) -> N
 
     assert metrics.recall_at_k is None
     assert metrics.insufficiency_reason == "no eligible labels or pairwise judgments"
+
+
+def test_metrics_report_zero_candidate_overlap_separately_from_label_count(
+    tmp_path: Path,
+) -> None:
+    store = CorpusStore(tmp_path / "corpus.json")
+    store.append(
+        (
+            _event("positive", "arxiv:1", CorpusLabel.POSITIVE),
+            _event("negative", "arxiv:2", CorpusLabel.NEGATIVE),
+            _event("positive-2", "arxiv:3", CorpusLabel.POSITIVE),
+            _event("negative-2", "arxiv:4", CorpusLabel.NEGATIVE),
+            _event("positive-3", "arxiv:5", CorpusLabel.POSITIVE),
+        )
+    )
+    corpus = store.snapshot(_NOW)
+
+    metrics = evaluate_ranking((), corpus, tuple(f"arxiv:{index}" for index in range(1, 6)))
+
+    assert metrics.evaluated_labels == 5
+    assert metrics.candidate_overlap == 0
+    assert metrics.provisional
+
+
+def test_metrics_match_an_exact_doi_alias_without_fuzzy_identity(tmp_path: Path) -> None:
+    store = CorpusStore(tmp_path / "corpus.json")
+    store.append((_event("positive", "doi:10.1000/example", CorpusLabel.POSITIVE),))
+    corpus = store.snapshot(_NOW)
+
+    metrics = evaluate_ranking(
+        (
+            RankedPaper(
+                "arxiv:2401.00001",
+                0.9,
+                identifiers=("doi:10.1000/example",),
+            ),
+        ),
+        corpus,
+        ("doi:10.1000/example",),
+    )
+
+    assert metrics.candidate_overlap == 1
+    assert metrics.recall_at_k == 1.0
+    assert metrics.precision_at_k == 1.0

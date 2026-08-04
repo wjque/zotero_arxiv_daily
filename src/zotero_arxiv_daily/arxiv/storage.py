@@ -59,6 +59,27 @@ class ArxivStateStore:
         value = self._read().get("in_progress")
         return datetime.fromisoformat(value).astimezone(UTC) if isinstance(value, str) else None
 
+    def retrieval_status(self) -> tuple[bool, str | None, datetime | None]:
+        """Read non-authoritative degraded provenance for the last candidate input."""
+
+        payload = self._read()
+        degraded = payload.get("degraded") is True
+        reason = payload.get("degraded_reason")
+        source = payload.get("degraded_source_checkpoint")
+        source_at = (
+            datetime.fromisoformat(source).astimezone(UTC) if isinstance(source, str) else None
+        )
+        return degraded, reason if isinstance(reason, str) else None, source_at
+
+    def mark_degraded(self, reason: str, source_checkpoint: RetrievalCheckpoint) -> None:
+        """Record stale-pool provenance without moving the successful checkpoint."""
+
+        payload = self._read()
+        payload["degraded"] = True
+        payload["degraded_reason"] = reason[:160]
+        payload["degraded_source_checkpoint"] = source_checkpoint.completed_at.isoformat()
+        self._write(payload)
+
     def begin(self, started_at: datetime) -> None:
         """Record an in-progress marker without replacing the successful checkpoint."""
 
@@ -85,6 +106,9 @@ class ArxivStateStore:
             "seen_ids": sorted(seen),
             "candidates": [_candidate_payload(candidate) for candidate in pool],
             "in_progress": None,
+            "degraded": False,
+            "degraded_reason": None,
+            "degraded_source_checkpoint": None,
         }
         self._write(payload)
 

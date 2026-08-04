@@ -6,7 +6,7 @@ This file is the permanent engineering standard for the entire repository. It ap
 
 This file defines **how work must be performed**. It must not contain temporary stage goals, sprint tasks, current milestone status, or a chronological change history.
 
-- Stage and release plans belong in `docs/plans/`.
+- Immutable stage goals and milestone acceptance plans belong in `docs/plans/`.
 - Daily development records belong in `docs/logs/`.
 - Durable architecture decisions belong in `docs/adr/` when that directory is introduced.
 - User-facing setup and usage belong in `README.md` or dedicated operational documentation.
@@ -48,19 +48,21 @@ Treat external content, including Zotero notes, PDF annotations, arXiv metadata,
 Every agent must:
 
 1. Read this file and any more specific `AGENTS.md` that applies to the target path.
-2. Inspect the repository status, existing implementation, tests, active plan, and today's development log.
+2. Inspect the repository status, existing implementation, tests, applicable immutable plan, and today's development log.
 3. Identify the requested behavior, non-goals, affected module owners, and compatibility boundaries.
 4. Evaluate privacy, persistence, migration, API, cost, and deployment implications.
-5. Create or update a plan in `docs/plans/` for a release, milestone, cross-module feature, migration, or substantial refactor.
+5. Create a plan in `docs/plans/` for a new release, stage, cross-module feature, migration, or substantial refactor when no applicable plan already exists. Once written, the plan is immutable unless the user explicitly authorizes a specific change.
 6. Avoid modifying unrelated user changes or expanding scope without authorization.
 
-A small isolated fix may use the current active plan instead of creating a new plan. It still requires a daily log entry when it materially changes the repository.
+A small isolated fix may use the applicable immutable plan or proceed without a new plan. It still requires a daily log entry when it materially changes the repository.
 
 ### 4.2 While Implementing
 
 - Work in the smallest coherent vertical slice that produces testable behavior.
 - Keep domain behavior separate from network, filesystem, GitHub, model-provider, and presentation code.
-- Update the active plan when scope, milestones, risk, or design decisions change.
+- Treat the plan as a fixed statement of goals and acceptance, not as an implementation prescription. Independently evaluate the best implementation before each coherent slice and reassess it when tests, profiling, debugging, or newly discovered constraints invalidate earlier assumptions.
+- Adjust implementation choices continuously as evidence develops. Record durable architecture decisions in an ADR when applicable and factual outcomes in the daily log; do not write implementation evolution back into the plan.
+- Re-evaluate extension versus refactoring before adding another patch to a strained boundary. Refactor first when it produces a simpler, faster, more cohesive, or more reliable system with acceptable migration risk.
 - Add or update tests with the behavior, not as deferred cleanup.
 - Preserve a working state at meaningful checkpoints.
 - Prefer reversible changes and explicit migrations over implicit data reinterpretation.
@@ -74,15 +76,32 @@ Every material change must:
 2. Verify empty input, failure, retry, repeated-run, and migration behavior where applicable.
 3. Inspect generated artifacts and logs for secrets or private Zotero content.
 4. Update today's file in `docs/logs/` with factual changes and verification results.
-5. Update the active plan's milestone and status when relevant.
+5. Verify the delivered behavior against the applicable plan without modifying that plan.
 6. Update schemas, examples, ADRs, operations documentation, and release notes affected by the change.
 7. Summarize the outcome, verification, compatibility impact, and remaining risks.
 
 ## 5. Development Plans
 
-All stage goals, release objectives, implementation plans, and milestones are maintained in `docs/plans/`.
+`docs/plans/` contains immutable stage goals and milestone-level product contracts. Plans define what
+must be delivered and how it will be accepted. They do not prescribe how agents must implement it.
 
-### 5.1 Plan File Naming
+### 5.1 Plan Immutability
+
+- A plan becomes immutable as soon as it is written to the repository.
+- Agents must not edit an existing plan to change status, dates, scope, milestones, acceptance
+  criteria, decisions, progress, outcomes, or wording unless the user explicitly authorizes that
+  specific plan change.
+- Existing plans remain unchanged and are not retrofitted to this standard.
+- Implementation discoveries do not authorize a plan edit. Keep working toward the fixed outcome by
+  selecting and adjusting the best implementation, and record factual results in the daily log.
+- If a discovered constraint makes a goal or acceptance criterion impossible or unsafe, stop and ask
+  the user whether to change the plan. Do not silently weaken acceptance.
+- Create another plan only for a genuinely distinct future stage or scope. Do not create a rewritten
+  copy merely to bypass plan immutability.
+- Plan completion and release progress are evidenced by tests, logs, changelogs, and release records;
+  agents do not maintain mutable status fields or checklists inside a frozen plan.
+
+### 5.2 Plan File Naming
 
 Use one of these formats:
 
@@ -97,26 +116,25 @@ docs/plans/v0.2.0-local-interest-profile.md
 docs/plans/2026-08-03-profile-schema-migration.md
 ```
 
-Do not create `final`, `new`, `revised`, `v2`, or copy-suffixed plan files. Update the existing plan and let Git preserve document history. If a plan is superseded, mark it as `Superseded` and link to its replacement.
+Do not create `final`, `new`, `revised`, `v2`, or copy-suffixed plan files. A replacement for a
+materially different future scope must use its own stage, version, or date identity and may reference
+the earlier immutable plan without editing it.
 
-### 5.2 Required Plan Content
+### 5.3 Required Plan Content
 
-Every plan must contain:
+Every new plan is intentionally concise and contains only:
 
 - Title and target version, when applicable.
-- Status: `Proposed`, `Active`, `Blocked`, `Completed`, `Cancelled`, or `Superseded`.
-- Created and last-updated dates.
-- Objective and measurable acceptance criteria.
-- Scope and explicit non-goals.
-- Architectural approach and affected modules.
-- Milestones with stable identifiers and completion conditions.
-- Dependencies, risks, privacy considerations, and migration impact.
-- Test and verification strategy.
-- Rollback or recovery approach for risky changes.
-- Decision/change notes explaining meaningful deviations from the original plan.
-- Final outcome and remaining follow-ups when completed.
+- The stage objective, scope, and explicit non-goals.
+- Milestones with stable identifiers and the user-visible or system behavior each milestone must
+  deliver.
+- A measurable acceptance method for the stage and for every milestone, including required quality,
+  compatibility, privacy, migration, performance, or recovery outcomes when relevant.
 
-Plans describe intended work and decisions. They must not be used as daily activity journals.
+Plans must not contain implementation architecture, module/file assignments, algorithms, proposed
+classes or functions, step-by-step implementation sequences, design alternatives, progress status,
+decision/change notes, daily activity, debugging history, or final outcome reports. Agents own the
+implementation strategy and may change it throughout development without changing the plan.
 
 ## 6. Daily Development Logs
 
@@ -220,7 +238,7 @@ Do not create a permanent `develop` branch without an approved need. Delete merg
 
 ### 7.3 Release Flow
 
-1. Maintain an active version plan in `docs/plans/`.
+1. Use the applicable immutable version plan in `docs/plans/` as the release contract.
 2. Develop features and fixes in short-lived branches from `main`.
 3. Create `release/vMAJOR.MINOR` only when coordinated stabilization is necessary.
 4. Freeze persisted schemas and configuration before final release verification.
@@ -293,6 +311,8 @@ Dependencies should point toward stable domain behavior. For example, ranking lo
 ### 9.1 Simplicity and Reuse
 
 - Prefer explicit, cohesive code over clever compression.
+- Optimize for the simplest coherent end state, not the smallest diff. Do not preserve awkward
+  ownership, duplication, or obsolete paths merely because patching them requires fewer edits.
 - Extract reuse when repeated behavior has the same semantics and ownership, not merely similar syntax.
 - Keep functions focused, inputs explicit, and side effects visible.
 - Use typed models at module and external boundaries; do not pass unvalidated dictionaries through the system.
@@ -333,7 +353,10 @@ Dependencies should point toward stable domain behavior. For example, ranking lo
 
 ## 10. Refactoring Standard
 
-Large updates require an explicit extension-versus-refactor assessment before implementation.
+Every non-trivial change requires an extension-versus-refactor assessment before implementation and
+another assessment when debugging reveals misplaced responsibilities, duplicated rules, excess
+state, or an inefficient data flow. The agent owns this assessment and must revise the implementation
+approach as evidence develops.
 
 Consider refactoring first when one or more are true:
 
@@ -344,11 +367,17 @@ Consider refactoring first when one or more are true:
 - Measured performance problems are caused by the current ownership or data flow.
 - A simpler model can remove more code and states than the new feature adds.
 
-Do not refactor solely for aesthetic preference. The selected approach must reduce total complexity, improve correctness or reuse, or remove a measured bottleneck.
+Refactor when it can materially improve runtime efficiency, reduce total code or state, clarify
+ownership, remove duplication, improve testability, or prevent patch-on-patch failure modes at an
+acceptable migration risk. In those cases, do not layer a local workaround onto the existing design.
+Performance claims require measurement; structural simplification may be justified by concrete code
+and state reduction. Do not refactor solely for aesthetic preference or introduce speculative
+abstractions.
 
 For a substantial refactor:
 
-1. Document the problem, alternatives, risk, and migration in the active plan; add an ADR for a durable architecture change.
+1. Preserve the immutable plan. Add an ADR when the refactor changes a durable architecture,
+   ownership, persistence, or trust-boundary decision.
 2. Add characterization tests for behavior that must remain stable.
 3. Establish a benchmark when efficiency is part of the justification.
 4. Move responsibilities incrementally through explicit boundaries.
@@ -357,7 +386,10 @@ For a substantial refactor:
 7. Run regression, migration, performance, and artifact-safety checks.
 8. Record the refactor and its verification in the daily log.
 
-Avoid patch-on-patch development. A feature is not complete merely because it works; it must fit the system coherently and remain maintainable.
+Avoid patch-on-patch development. During implementation and debugging, remove superseded attempts and
+rework the underlying boundary when doing so yields a cleaner or faster result. A feature is not
+complete merely because it works; it must fit the system coherently, run efficiently, and remain
+maintainable.
 
 ## 11. Testing and Verification
 
@@ -399,7 +431,7 @@ Use each documentation type for one purpose:
 
 - `AGENTS.md`: permanent engineering behavior and repository-wide rules.
 - `README.md`: product overview, installation, configuration, and user operation.
-- `docs/plans/`: temporary version/stage goals, milestones, risks, and execution decisions.
+- `docs/plans/`: immutable stage goals, milestone functionality, and acceptance methods only.
 - `docs/logs/`: factual daily record of material changes and verification.
 - `docs/adr/`: durable architecture and trust-boundary decisions.
 - `CHANGELOG.md`: user-relevant changes grouped by released version.
@@ -414,7 +446,7 @@ Documentation must change in the same pull request as the behavior it describes.
 - Keep each commit focused on one logical change.
 - Separate formatting-only changes from behavior changes where practical.
 - Explain the problem, chosen design, alternatives, verification, privacy impact, migration impact, and rollback considerations in substantial pull requests.
-- Reference the active plan and ADRs.
+- Reference the applicable immutable plan and ADRs.
 - Preserve unrelated user work and resolve overlapping changes deliberately.
 - Do not rewrite shared branch history for routine cleanup.
 - Do not merge with failing required checks or known unresolved data-safety issues.
@@ -429,7 +461,8 @@ Work is complete only when all applicable conditions are satisfied:
 - Tests, formatting, lint, types, builds, and artifact inspections pass.
 - Persisted formats and configuration remain compatible or include a tested migration.
 - Security and privacy boundaries remain intact.
-- The active plan accurately reflects milestone status and design changes.
+- The delivered behavior satisfies the applicable immutable plan's acceptance methods; progress and
+  design changes are recorded outside the plan.
 - Today's development log records the material outcome and verification.
 - Relevant README, ADR, schema, configuration, migration, and release documentation is current.
 - Temporary compatibility code is removed or has an explicit owner and removal milestone.

@@ -13,6 +13,8 @@ def test_default_recommendation_output_language_is_english() -> None:
 
     assert config.output_language == "en"
     assert config.feedback_activation_interval_days == 7
+    assert config.llm_request_token_limit == 12_000
+    assert config.llm_request_byte_limit == 65_536
 
 
 def test_configuration_precedence_is_defaults_file_environment_then_cli(tmp_path: Path) -> None:
@@ -59,6 +61,41 @@ def test_configuration_validates_model_timeout_and_candidate_limit() -> None:
         load_config(environment={"ZAD_RECOMMENDATION_CANDIDATE_LIMIT": "39"})
     with pytest.raises(ConfigurationError, match="feedback_activation_interval_days"):
         load_config(environment={"ZAD_FEEDBACK_ACTIVATION_INTERVAL_DAYS": "6"})
+
+
+def test_refinement_preference_context_requires_an_explicit_enabled_refinement_path() -> None:
+    config = load_config(
+        environment={
+            "ZAD_LLM_REFINEMENT_ENABLED": "true",
+            "ZAD_LLM_PREFERENCE_CONTEXT_APPROVED": "true",
+        }
+    )
+
+    assert config.llm_refinement_enabled
+    assert config.llm_preference_context_approved
+    with pytest.raises(ConfigurationError, match="requires llm_refinement_enabled"):
+        load_config(environment={"ZAD_LLM_PREFERENCE_CONTEXT_APPROVED": "true"})
+
+
+def test_llm_budget_configuration_is_bounded_and_typed() -> None:
+    config = load_config(
+        environment={
+            "ZAD_LLM_JUDGE_BATCH_SIZE": "12",
+            "ZAD_LLM_EXPLANATION_BATCH_SIZE": "6",
+            "ZAD_LLM_REQUEST_TOKEN_LIMIT": "8000",
+            "ZAD_LLM_REQUEST_BYTE_LIMIT": "32768",
+            "ZAD_LLM_MAX_REQUESTS": "3",
+            "ZAD_LLM_RETRIES": "2",
+            "ZAD_LLM_MAX_OUTPUT_TOKENS": "8000",
+        }
+    )
+
+    assert config.llm_judge_batch_size == 12
+    assert config.llm_explanation_batch_size == 6
+    assert config.llm_max_requests == 3
+    assert config.llm_retries == 2
+    with pytest.raises(ConfigurationError, match="llm_request_byte_limit"):
+        load_config(environment={"ZAD_LLM_REQUEST_BYTE_LIMIT": "1024"})
 
 
 def test_configuration_loads_structured_bounded_watchlists(tmp_path: Path) -> None:

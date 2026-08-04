@@ -33,6 +33,16 @@ _ENVIRONMENT_KEYS = {
     "ZAD_RECOMMENDATION_SUPPRESSION_DAYS": "recommendation_suppression_days",
     "ZAD_FEEDBACK_ACTIVATION_INTERVAL_DAYS": "feedback_activation_interval_days",
     "ZAD_FEEDBACK_MINIMUM_INDEPENDENT_PAPERS": "feedback_minimum_independent_papers",
+    "ZAD_RANKING_WEIGHT_STATE_PATH": "ranking_weight_state_path",
+    "ZAD_LLM_REFINEMENT_ENABLED": "llm_refinement_enabled",
+    "ZAD_LLM_PREFERENCE_CONTEXT_APPROVED": "llm_preference_context_approved",
+    "ZAD_LLM_JUDGE_BATCH_SIZE": "llm_judge_batch_size",
+    "ZAD_LLM_EXPLANATION_BATCH_SIZE": "llm_explanation_batch_size",
+    "ZAD_LLM_REQUEST_TOKEN_LIMIT": "llm_request_token_limit",
+    "ZAD_LLM_REQUEST_BYTE_LIMIT": "llm_request_byte_limit",
+    "ZAD_LLM_MAX_REQUESTS": "llm_max_requests",
+    "ZAD_LLM_RETRIES": "llm_retries",
+    "ZAD_LLM_MAX_OUTPUT_TOKENS": "llm_max_output_tokens",
 }
 _FILE_KEYS = frozenset(_ENVIRONMENT_KEYS.values()) | {"watched_authors", "watched_institutions"}
 
@@ -67,6 +77,16 @@ class AppConfig:
     recommendation_suppression_days: int = 14
     feedback_activation_interval_days: int = 7
     feedback_minimum_independent_papers: int = 3
+    ranking_weight_state_path: str = "runtime/ranking-weights.json"
+    llm_refinement_enabled: bool = False
+    llm_preference_context_approved: bool = False
+    llm_judge_batch_size: int = 40
+    llm_explanation_batch_size: int = 20
+    llm_request_token_limit: int = 12_000
+    llm_request_byte_limit: int = 65_536
+    llm_max_requests: int = 4
+    llm_retries: int = 1
+    llm_max_output_tokens: int = 12_000
 
     def validate(self) -> None:
         """Validate values that are safe to check before an operation starts."""
@@ -100,6 +120,26 @@ class AppConfig:
             raise ConfigurationError(
                 "feedback_minimum_independent_papers must be between 1 and 100"
             )
+        if not self.ranking_weight_state_path.strip():
+            raise ConfigurationError("ranking_weight_state_path must not be empty")
+        if self.llm_preference_context_approved and not self.llm_refinement_enabled:
+            raise ConfigurationError(
+                "llm_preference_context_approved requires llm_refinement_enabled"
+            )
+        if not 1 <= self.llm_judge_batch_size <= 80:
+            raise ConfigurationError("llm_judge_batch_size must be between 1 and 80")
+        if not 1 <= self.llm_explanation_batch_size <= 40:
+            raise ConfigurationError("llm_explanation_batch_size must be between 1 and 40")
+        if not 1_000 <= self.llm_request_token_limit <= 32_000:
+            raise ConfigurationError("llm_request_token_limit must be between 1000 and 32000")
+        if not 4_096 <= self.llm_request_byte_limit <= 1_048_576:
+            raise ConfigurationError("llm_request_byte_limit must be between 4096 and 1048576")
+        if not 1 <= self.llm_max_requests <= 8:
+            raise ConfigurationError("llm_max_requests must be between 1 and 8")
+        if not 0 <= self.llm_retries <= 3:
+            raise ConfigurationError("llm_retries must be between 0 and 3")
+        if not 256 <= self.llm_max_output_tokens <= 32_000:
+            raise ConfigurationError("llm_max_output_tokens must be between 256 and 32000")
 
 
 def load_config(
@@ -169,6 +209,40 @@ def load_config(
             "feedback_minimum_independent_papers",
             defaults.feedback_minimum_independent_papers,
         ),
+        ranking_weight_state_path=_string_value(
+            normalized_values,
+            "ranking_weight_state_path",
+            defaults.ranking_weight_state_path,
+        ),
+        llm_refinement_enabled=_bool_value(
+            normalized_values,
+            "llm_refinement_enabled",
+            defaults.llm_refinement_enabled,
+        ),
+        llm_preference_context_approved=_bool_value(
+            normalized_values,
+            "llm_preference_context_approved",
+            defaults.llm_preference_context_approved,
+        ),
+        llm_judge_batch_size=_int_value(
+            normalized_values, "llm_judge_batch_size", defaults.llm_judge_batch_size
+        ),
+        llm_explanation_batch_size=_int_value(
+            normalized_values, "llm_explanation_batch_size", defaults.llm_explanation_batch_size
+        ),
+        llm_request_token_limit=_int_value(
+            normalized_values, "llm_request_token_limit", defaults.llm_request_token_limit
+        ),
+        llm_request_byte_limit=_int_value(
+            normalized_values, "llm_request_byte_limit", defaults.llm_request_byte_limit
+        ),
+        llm_max_requests=_int_value(
+            normalized_values, "llm_max_requests", defaults.llm_max_requests
+        ),
+        llm_retries=_int_value(normalized_values, "llm_retries", defaults.llm_retries),
+        llm_max_output_tokens=_int_value(
+            normalized_values, "llm_max_output_tokens", defaults.llm_max_output_tokens
+        ),
     )
     config.validate()
     return config
@@ -204,12 +278,22 @@ def _read_environment(environment: Mapping[str, str]) -> dict[str, object]:
 
 def _normalize_values(values: Mapping[str, object]) -> dict[str, object]:
     normalized = dict(values)
-    if "public_output" in normalized:
-        normalized["public_output"] = _parse_bool(normalized["public_output"], "public_output")
+    for name in (
+        "public_output",
+        "llm_refinement_enabled",
+        "llm_preference_context_approved",
+    ):
+        if name in normalized:
+            normalized[name] = _parse_bool(normalized[name], name)
     for name in ("deepseek_api_key", "github_repository", "github_token", "pages_passphrase"):
         if name in normalized and not isinstance(normalized[name], str):
             raise ConfigurationError(f"{name} must be a string")
-    for name in ("zotero_base_url", "local_database_path", "output_language"):
+    for name in (
+        "zotero_base_url",
+        "local_database_path",
+        "output_language",
+        "ranking_weight_state_path",
+    ):
         if name in normalized and not isinstance(normalized[name], str):
             raise ConfigurationError(f"{name} must be a string")
     for name in (
@@ -221,6 +305,13 @@ def _normalize_values(values: Mapping[str, object]) -> dict[str, object]:
         "recommendation_suppression_days",
         "feedback_activation_interval_days",
         "feedback_minimum_independent_papers",
+        "llm_judge_batch_size",
+        "llm_explanation_batch_size",
+        "llm_request_token_limit",
+        "llm_request_byte_limit",
+        "llm_max_requests",
+        "llm_retries",
+        "llm_max_output_tokens",
     ):
         value = normalized.get(name)
         if isinstance(value, str):

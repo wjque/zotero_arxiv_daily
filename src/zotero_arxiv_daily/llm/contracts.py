@@ -218,7 +218,12 @@ def _complete_unique(
 
 
 def _generic_reason(value: str) -> bool:
-    return value.casefold().strip() in {
+    normalized = value.casefold().strip()
+    generic = {
         "this paper is relevant to your interests.",
         "this is a relevant paper for you.",
+        "this paper is relevant.",
+        "this is a useful paper.",
     }
+    words = [word for word in normalized.replace("-", " ").split() if word.isalpha()]
+    return normalized in generic or len(set(words)) < 5

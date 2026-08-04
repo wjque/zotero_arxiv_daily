@@ -1,5 +1,42 @@
 # Changelog
 
+## v0.2.0 - Unreleased
+
+### Added
+
+- Added a versioned normalized ranker with applicability-aware features, explicit activation and
+  rollback pointers, diversity constraints, and bounded exploration.
+- Added local curated-corpus snapshots, baseline/shadow evaluation, calibration, candidate-label
+  overlap reporting, and feature-group ablations without exposing private labels.
+- Added append-only feedback v2 with impression-aware outcome attribution, guarded weekly aggregate
+  activation, and exact v1 compatibility.
+- Added provider-neutral `judge-v1` and `explain-v1` refinement with complete-record adaptive
+  batching, separate caches, bounded retries, and final-candidate-only prose generation.
+- Added publishable schema v4 quality, uncertainty, preference-signal, and limitation fields with
+  exact v1-v3 readers and encrypted desktop/mobile browser execution tests.
+
+### Changed
+
+- Expanded protected profile schema v4 with weighted long-term/recent interests and bounded
+  domain, method, and task facets derived locally from the complete Zotero library.
+- Hardened arXiv retries, response limits, candidate-pool degradation, workflow state restoration,
+  and post-deployment state reconciliation while preserving the previous usable site on failure.
+- Added optional exact-identity public evidence adapters and kept missing or inapplicable evidence
+  distinct from negative quality evidence.
+
+### Compatibility
+
+- Existing remote-profile v1-v3, feedback v1, arXiv state v1-v3, recommendation history, and
+  publishable site v1-v3 remain readable through explicit adapters or migrations.
+- The frozen v0.1.2 ranker remains available as the default rollback path until the v0.2.0
+  production canary and rollback rehearsal complete.
+
+### Security
+
+- Raw Zotero content, curated labels, free-text feedback, prompts, and credentials remain excluded
+  from browser artifacts and public state. New model preference fields remain disabled until an
+  explicit field-level trust-boundary approval.
+
 ## v0.1.2 - 2026-08-02
 
 ### Changed

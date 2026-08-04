@@ -7,6 +7,7 @@ from datetime import datetime
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
 from zotero_arxiv_daily.core.time import require_aware_utc
+from zotero_arxiv_daily.ranking.weights import NormalizedFeature
 
 RECOMMENDATION_SET_SCHEMA_VERSION = 2
 RECOMMENDATION_RUN_MANIFEST_SCHEMA_VERSION = 1
@@ -18,6 +19,8 @@ class ScoredCandidate:
     score: float
     components: tuple[tuple[str, float], ...]
     source: str
+    feature_values: tuple[NormalizedFeature, ...] = ()
+    weight_set_version: str = "coarse-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -29,6 +32,12 @@ class RecommendationRecord:
     summary: str
     reason: str
     identity_matches: tuple[str, ...] = ()
+    limitation: str | None = None
+    uncertainty: float | None = None
+
+    def __post_init__(self) -> None:
+        if self.uncertainty is not None and not 0 <= self.uncertainty <= 1:
+            raise ValueError("recommendation uncertainty must be between zero and one")
 
 
 @dataclass(frozen=True, slots=True)
@@ -68,3 +77,16 @@ class RecommendationRunManifest:
     generation_started_at: datetime | None = None
     generation_completed_at: datetime | None = None
     profile_library_version: int | None = None
+    estimated_input_tokens: int = 0
+    estimated_output_tokens: int = 0
+    actual_input_tokens: int | None = None
+    actual_output_tokens: int | None = None
+    judge_requests: int = 0
+    explanation_requests: int = 0
+    judge_cache_hits: int = 0
+    explanation_cache_hits: int = 0
+    retry_count: int = 0
+    weight_set_version: str = "coarse-v1"
+    candidate_pool_degraded: bool = False
+    candidate_pool_degraded_reason: str | None = None
+    candidate_pool_source_checkpoint: datetime | None = None

@@ -3,7 +3,7 @@ from __future__ import annotations
 import pytest
 
 from zotero_arxiv_daily.core.errors import ExternalServiceError
-from zotero_arxiv_daily.llm.batch import propose_bounded
+from zotero_arxiv_daily.llm.batch import pack_complete_records, propose_bounded
 
 
 class Provider:
@@ -60,3 +60,29 @@ def test_invalid_structured_response_retries_once() -> None:
 
     assert proposals[0].arxiv_id == "2401.00001"
     assert usage.requests == 2
+
+
+def test_complete_record_packing_never_truncates_title_or_abstract() -> None:
+    records: list[dict[str, object]] = [
+        {
+            "arxiv_id": "2401.00001",
+            "title": "A" * 180,
+            "summary": "The principal result appears at the end. " + "B" * 240,
+        },
+        {"arxiv_id": "2401.00002", "title": "Second", "summary": "Abstract"},
+    ]
+
+    batches = pack_complete_records(records, max_records=1, max_tokens=300)
+
+    assert len(batches) == 2
+    assert batches[0][0]["title"] == records[0]["title"]
+    assert batches[0][0]["summary"] == records[0]["summary"]
+
+
+def test_oversized_complete_record_fails_explicitly() -> None:
+    with pytest.raises(ExternalServiceError, match="exceeds"):
+        pack_complete_records(
+            [{"arxiv_id": "2401.00001", "title": "x", "summary": "y" * 100}],
+            max_records=1,
+            max_tokens=10,
+        )

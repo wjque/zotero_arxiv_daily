@@ -7,7 +7,11 @@ from pathlib import Path
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate, ArxivId
 from zotero_arxiv_daily.llm.cache import ProposalCache
-from zotero_arxiv_daily.pipeline.recommend import package_result, run_recommendation
+from zotero_arxiv_daily.pipeline.recommend import (
+    package_result,
+    run_recommendation,
+    run_refined_recommendation,
+)
 from zotero_arxiv_daily.profile.models import RemoteProfile
 
 
@@ -71,6 +75,53 @@ class _Provider:
 class _ForbiddenProvider:
     def propose(self, candidates: list[dict[str, object]]) -> str:
         raise AssertionError("empty or suppressed input must not call the provider")
+
+
+class _RefinementProvider:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, list[dict[str, object]]]] = []
+
+    def complete(self, contract: str, records: list[dict[str, object]]) -> str:
+        self.calls.append((contract, records))
+        if contract == "judge-v1":
+            judgments = []
+            for record in records:
+                score = 0.0 if record["arxiv_id"] == "2401.00004" else 0.8
+                judgments.append(
+                    {
+                        "arxiv_id": record["arxiv_id"],
+                        "dimensions": {
+                            "contribution_clarity": score,
+                            "novelty": score,
+                            "insight_plausibility": score,
+                            "methodological_evidence": score,
+                            "empirical_evidence": None,
+                            "limitations": 0.4,
+                            "reproducibility": None,
+                        },
+                        "uncertainty": 0.2,
+                        "evidence_fields": ["summary"],
+                    }
+                )
+            return json.dumps({"judgments": judgments})
+        return json.dumps(
+            {
+                "explanations": [
+                    {
+                        "arxiv_id": record["arxiv_id"],
+                        "summary": (
+                            "It evaluates a bounded learning method under realistic constraints."
+                        ),
+                        "reason": (
+                            "Its bounded learning method addresses the stated ranking constraint."
+                        ),
+                        "limitation": "The abstract alone does not verify deployment performance.",
+                        "evidence_fields": ["summary"],
+                    }
+                    for record in records
+                ]
+            }
+        )
 
 
 def test_fully_suppressed_input_creates_empty_batch_without_model_call(tmp_path: Path) -> None:
@@ -193,3 +244,71 @@ def test_candidate_revision_invalidates_cached_proposal(tmp_path: Path) -> None:
     assert provider.calls == 2
     assert manifest.model_requests == 1
     assert manifest.cache_hits == 0
+
+
+def test_refined_run_judges_shortlist_and_generates_final_only_explanations(tmp_path: Path) -> None:
+    profile = RemoteProfile(4, 9, ("learning",), ("cs.LG",), (), ())
+    provider = _RefinementProvider()
+    cache = ProposalCache(tmp_path / "refinement-cache.json")
+    now = datetime(2026, 8, 1, tzinfo=UTC)
+    titles = ("Learning alpha", "Learning beta", "Learning gamma", "Learning delta")
+    candidates = tuple(
+        replace(
+            _candidate(f"2401.{index:05d}"),
+            title=title,
+            authors=(f"Author {index}",),
+        )
+        for index, title in enumerate(titles, start=1)
+    )
+
+    result, manifest = run_refined_recommendation(
+        candidates,
+        profile,
+        now,
+        provider,
+        cache,
+        model="deepseek-v4-flash",
+        output_language="en",
+        completed_at=now,
+    )
+    repeated, repeated_manifest = run_refined_recommendation(
+        candidates,
+        profile,
+        now,
+        provider,
+        cache,
+        model="deepseek-v4-flash",
+        output_language="en",
+        completed_at=now,
+    )
+
+    assert len(result.recommendations) == 3
+    assert [contract for contract, _ in provider.calls] == ["judge-v1", "explain-v1"]
+    assert len(provider.calls[0][1]) == 4
+    assert len(provider.calls[1][1]) == 3
+    assert all("relevance_signals" not in record for record in provider.calls[1][1])
+    assert manifest.judge_requests == 1
+    assert manifest.explanation_requests == 1
+    assert manifest.estimated_output_tokens > 0
+    assert repeated.recommendations == result.recommendations
+    assert repeated_manifest.model_requests == 0
+    assert repeated_manifest.cache_hits == 7
+
+    run_refined_recommendation(
+        candidates,
+        profile,
+        now,
+        provider,
+        cache,
+        model="deepseek-v4-flash",
+        output_language="en",
+        allow_preference_context=True,
+        completed_at=now,
+    )
+
+    assert [contract for contract, _ in provider.calls] == [
+        "judge-v1",
+        "explain-v1",
+        "explain-v1",
+    ]
+    assert all("relevance_signals" in record for record in provider.calls[-1][1])

@@ -26,8 +26,6 @@ from zotero_arxiv_daily.evaluation.models import (
     ResolvedJudgment,
 )
 
-_AUTOMATIC_TUNING_MINIMUM_LABELS = 40
-
 
 def make_evaluation_snapshot(
     corpus: CorpusSnapshot,
@@ -228,9 +226,11 @@ def evaluate_ranking(
     negatives = {paper_id for paper_id, label in labels.items() if label is CorpusLabel.NEGATIVE}
     ordered = tuple(sorted(ranked, key=lambda item: (-item.score, item.paper_id)))
     top_k = ordered[:k]
-    labeled_top = tuple(item for item in top_k if item.paper_id in labels)
-    positive_top = sum(labels[item.paper_id] is CorpusLabel.POSITIVE for item in labeled_top)
-    negative_top = sum(labels[item.paper_id] is CorpusLabel.NEGATIVE for item in labeled_top)
+    labeled_top = tuple(
+        (item, label) for item in top_k if (label := _label_for(item, labels)) is not None
+    )
+    positive_top = sum(label is CorpusLabel.POSITIVE for _, label in labeled_top)
+    negative_top = sum(label is CorpusLabel.NEGATIVE for _, label in labeled_top)
     recall = positive_top / len(positives) if positives else None
     precision = positive_top / len(labeled_top) if labeled_top else None
     negative_rate = negative_top / len(labeled_top) if labeled_top else None
@@ -239,6 +239,7 @@ def evaluate_ranking(
     brier = _brier_score(ordered, labels)
     pairwise_accuracy = _pairwise_accuracy(ordered, corpus, selected_ids)
     insufficient = _insufficiency_reason(len(labels), len(positives), len(corpus.pairwise))
+    candidate_overlap = len(set(labels) & _ranked_identifiers(ordered))
     return RankingMetrics(
         len(labels),
         len(positives),
@@ -252,8 +253,9 @@ def evaluate_ranking(
         diversity,
         brier,
         pairwise_accuracy,
-        insufficient is not None or len(labels) < _AUTOMATIC_TUNING_MINIMUM_LABELS,
+        insufficient is not None or len(labels) < 5 or candidate_overlap < 5,
         insufficient,
+        candidate_overlap,
     )
 
 
@@ -271,17 +273,24 @@ def compare_rankings(
     recall_delta = _delta(candidate.recall_at_k, baseline.recall_at_k)
     negative_rate_delta = _delta(candidate.negative_rate_at_k, baseline.negative_rate_at_k)
     reasons: list[str] = []
+    warnings: list[str] = []
     if candidate.insufficiency_reason:
-        reasons.append(candidate.insufficiency_reason)
-    if candidate.evaluated_labels < _AUTOMATIC_TUNING_MINIMUM_LABELS:
-        reasons.append("fewer than 40 independent labels; result is provisional")
+        warnings.append(candidate.insufficiency_reason)
+    overlap = min(baseline.candidate_overlap, candidate.candidate_overlap)
+    if overlap == 0:
+        warnings.append("candidate-label overlap is zero for at least one ranking")
+    elif overlap < 5:
+        warnings.append("few overlapping labels; metric uncertainty is high")
+    if overlap < 5:
+        warnings.append("sparse independent-label sample; metric uncertainty is high")
     if ndcg_delta is None:
-        reasons.append("NDCG is unavailable")
+        warnings.append("NDCG is unavailable")
     elif ndcg_delta < 0.05:
         reasons.append("NDCG improvement is below the 0.05 release target")
     if negative_rate_delta is not None and negative_rate_delta > 0:
         reasons.append("negative-label rate increased")
-    eligible = not reasons
+    # Warnings prevent automatic tuning; explicit canary review may still proceed.
+    eligible = not reasons and not warnings
     return ComparisonReport(
         baseline_name,
         candidate_name,
@@ -293,6 +302,7 @@ def compare_rankings(
         negative_rate_delta,
         eligible,
         tuple(reasons),
+        tuple(warnings),
     )
 
 
@@ -381,7 +391,7 @@ def _ndcg(
     dcg = sum(
         (1.0 / math.log2(index + 2))
         for index, item in enumerate(ranked[:k])
-        if labels.get(item.paper_id) is CorpusLabel.POSITIVE
+        if _label_for(item, labels) is CorpusLabel.POSITIVE
     )
     ideal = sum(1.0 / math.log2(index + 2) for index in range(min(positives, k)))
     return dcg / ideal if ideal else None
@@ -407,7 +417,7 @@ def _brier_score(ranked: tuple[RankedPaper, ...], labels: dict[str, CorpusLabel]
     minimum = min(item.score for item in ranked)
     maximum = max(item.score for item in ranked)
     for item in ranked:
-        label = labels.get(item.paper_id)
+        label = _label_for(item, labels)
         if label is None:
             continue
         probability = 0.5 if maximum == minimum else (item.score - minimum) / (maximum - minimum)
@@ -419,7 +429,12 @@ def _brier_score(ranked: tuple[RankedPaper, ...], labels: dict[str, CorpusLabel]
 def _pairwise_accuracy(
     ranked: tuple[RankedPaper, ...], corpus: CorpusSnapshot, paper_ids: frozenset[str]
 ) -> float | None:
-    scores = {item.paper_id: item.score for item in ranked}
+    scores: dict[str, float] = {}
+    for item in ranked:
+        for identifier in (item.paper_id, *item.identifiers):
+            if identifier in scores and scores[identifier] != item.score:
+                raise ValueError("ranked paper identifiers map to conflicting scores")
+            scores[identifier] = item.score
     outcomes: list[bool] = []
     for pair in corpus.pairwise:
         if (
@@ -431,6 +446,23 @@ def _pairwise_accuracy(
         if pair.paper_id in scores and pair.compared_paper_id in scores:
             outcomes.append(scores[pair.paper_id] > scores[pair.compared_paper_id])
     return sum(outcomes) / len(outcomes) if outcomes else None
+
+
+def _ranked_identifiers(ranked: tuple[RankedPaper, ...]) -> frozenset[str]:
+    return frozenset(
+        identifier for item in ranked for identifier in (item.paper_id, *item.identifiers)
+    )
+
+
+def _label_for(item: RankedPaper, labels: dict[str, CorpusLabel]) -> CorpusLabel | None:
+    matched = {
+        labels[identifier]
+        for identifier in (item.paper_id, *item.identifiers)
+        if identifier in labels
+    }
+    if len(matched) > 1:
+        raise ValueError("ranked paper identifiers map to conflicting corpus labels")
+    return next(iter(matched), None)
 
 
 def _insufficiency_reason(label_count: int, positive_count: int, pairwise_count: int) -> str | None:

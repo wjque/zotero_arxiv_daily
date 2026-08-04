@@ -8,6 +8,11 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from zotero_arxiv_daily.core.errors import ExternalServiceError
+from zotero_arxiv_daily.llm.batch import (
+    DEFAULT_REQUEST_BYTE_LIMIT,
+    DEFAULT_REQUEST_TOKEN_LIMIT,
+    pack_complete_records,
+)
 from zotero_arxiv_daily.llm.cache import ProposalCache
 from zotero_arxiv_daily.llm.contracts import (
     Explanation,
@@ -27,6 +32,7 @@ class RefinementUsage:
     cache_hits: int
     estimated_input_tokens: int
     estimated_output_tokens: int
+    retry_count: int = 0
 
 
 def run_judgments(
@@ -36,6 +42,11 @@ def run_judgments(
     *,
     cache_keys: dict[str, str],
     allowed_evidence_fields: frozenset[str],
+    batch_size: int = 40,
+    max_request_tokens: int = DEFAULT_REQUEST_TOKEN_LIMIT,
+    max_request_bytes: int = DEFAULT_REQUEST_BYTE_LIMIT,
+    max_requests: int = 4,
+    retries: int = 1,
 ) -> tuple[tuple[JudgeAssessment, ...], RefinementUsage]:
     """Run a complete judge layer; never return or cache a partial result."""
 
@@ -45,6 +56,11 @@ def run_judgments(
         records,
         cache_keys=cache_keys,
         contract="judge-v1",
+        batch_size=batch_size,
+        max_request_tokens=max_request_tokens,
+        max_request_bytes=max_request_bytes,
+        max_requests=max_requests,
+        retries=retries,
         parser=lambda payload, identifiers: parse_judgments(
             payload, identifiers, allowed_evidence_fields
         ),
@@ -58,6 +74,11 @@ def run_explanations(
     *,
     cache_keys: dict[str, str],
     allowed_evidence_fields: frozenset[str],
+    batch_size: int = 20,
+    max_request_tokens: int = DEFAULT_REQUEST_TOKEN_LIMIT,
+    max_request_bytes: int = DEFAULT_REQUEST_BYTE_LIMIT,
+    max_requests: int = 4,
+    retries: int = 1,
 ) -> tuple[tuple[Explanation, ...], RefinementUsage]:
     """Run final-only explanations under a separate cache namespace."""
 
@@ -67,6 +88,11 @@ def run_explanations(
         records,
         cache_keys=cache_keys,
         contract="explain-v1",
+        batch_size=batch_size,
+        max_request_tokens=max_request_tokens,
+        max_request_bytes=max_request_bytes,
+        max_requests=max_requests,
+        retries=retries,
         parser=lambda payload, identifiers: parse_explanations(
             payload, identifiers, allowed_evidence_fields
         ),
@@ -80,6 +106,11 @@ def _run[T: JudgeAssessment | Explanation](
     *,
     cache_keys: dict[str, str],
     contract: str,
+    batch_size: int,
+    max_request_tokens: int,
+    max_request_bytes: int,
+    max_requests: int,
+    retries: int,
     parser: Callable[[str, frozenset[str]], tuple[T, ...]],
 ) -> tuple[tuple[T, ...], RefinementUsage]:
     identifiers = _identifiers(records, cache_keys)
@@ -97,20 +128,55 @@ def _run[T: JudgeAssessment | Explanation](
             missing.append(record)
     if not missing:
         return tuple(cached), RefinementUsage(0, len(cached), 0, 0)
-    payload = provider.complete(contract, missing)
-    fresh = _parse(parser, payload, frozenset(str(record["arxiv_id"]) for record in missing))
-    if frozenset(value.arxiv_id for value in cached + list(fresh)) != identifiers:
+    batches = pack_complete_records(
+        missing,
+        max_records=batch_size,
+        max_tokens=max_request_tokens,
+        max_bytes=max_request_bytes,
+    )
+    if len(batches) > max_requests:
+        raise ExternalServiceError("refinement candidate set exceeds model request budget")
+    fresh_values: list[T] = []
+    requests = 0
+    retries_used = 0
+    input_tokens = 0
+    output_tokens = 0
+    for batch in batches:
+        batch_ids = frozenset(str(record["arxiv_id"]) for record in batch)
+        batch_input_tokens = _tokens(batch)
+        for attempt in range(retries + 1):
+            requests += 1
+            try:
+                payload = provider.complete(contract, list(batch))
+                fresh = _parse(parser, payload, batch_ids)
+            except (ExternalServiceError, IndexError) as error:
+                if attempt == retries:
+                    if isinstance(error, ExternalServiceError):
+                        raise
+                    raise ExternalServiceError("refinement provider failed") from error
+                retries_used += 1
+                continue
+            fresh_values.extend(fresh)
+            input_tokens += batch_input_tokens
+            output_tokens += _tokens(json.loads(payload))
+            break
+    fresh = tuple(fresh_values)
+    if frozenset(value.arxiv_id for value in cached + list(fresh)) != identifiers or len(
+        cached
+    ) + len(fresh) != len(identifiers):
         raise ExternalServiceError("refinement response does not cover every requested candidate")
     encoded = {value.arxiv_id: json.dumps(_entry(value)) for value in fresh}
+    # Cache writes happen only after every adaptive batch validates successfully.
     for identifier, value in encoded.items():
         cache.put(cache_keys[identifier], _wrap(contract, value))
     return (
         tuple(cached) + tuple(fresh),
         RefinementUsage(
-            1,
+            requests,
             len(cached),
-            _tokens(missing),
-            _tokens([json.loads(value) for value in encoded.values()]),
+            input_tokens,
+            output_tokens,
+            retries_used,
         ),
     )
 

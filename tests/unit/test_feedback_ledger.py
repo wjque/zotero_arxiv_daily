@@ -82,3 +82,32 @@ def test_position_outcomes_only_count_explicit_outcomes_after_impressions(tmp_pa
     )
 
     assert store.position_outcomes() == (PositionOutcomeRate(2, 1, 1, 1),)
+
+
+def test_repeated_paper_outcome_uses_matching_batch_impression(tmp_path: Path) -> None:
+    store = FeedbackLedgerStore(tmp_path / "feedback.json")
+    first = _NOW
+    second = _NOW + timedelta(days=1)
+    store.ingest(
+        (
+            FeedbackEvent(
+                "shown-a", FeedbackEventType.IMPRESSION, "a", first, batch_id="a", displayed_rank=1
+            ),
+            FeedbackEvent(
+                "shown-b", FeedbackEventType.IMPRESSION, "a", second, batch_id="b", displayed_rank=3
+            ),
+            FeedbackEvent(
+                "outcome-b",
+                FeedbackEventType.OUTCOME,
+                "a",
+                second + timedelta(hours=1),
+                FeedbackOutcome.WORTHWHILE,
+                batch_id="b",
+            ),
+        )
+    )
+
+    rates = {item.displayed_rank: item for item in store.position_outcomes()}
+
+    assert rates[1].explicit_outcome_count == 0
+    assert rates[3].explicit_outcome_count == 1

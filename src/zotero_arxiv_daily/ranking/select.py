@@ -5,14 +5,46 @@ from __future__ import annotations
 import re
 from collections import Counter
 from collections.abc import Mapping
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
 from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity, normalize_identity
 from zotero_arxiv_daily.ranking.models import RecommendationRecord, ScoredCandidate
-from zotero_arxiv_daily.ranking.weights import DEFAULT_WEIGHT_SET, NormalizedFeature, WeightSet
+from zotero_arxiv_daily.ranking.weights import (
+    DEFAULT_WEIGHT_SET,
+    FeatureGroup,
+    NormalizedFeature,
+    WeightSet,
+)
 
 _WORDS = re.compile(r"[a-z][a-z0-9-]{2,}")
+
+
+def _facet_tokens(value: str) -> frozenset[str]:
+    """Normalize hyphenated and spaced facet labels to the same token set."""
+
+    return frozenset(_WORDS.findall(value.casefold().replace("-", " ")))
+
+
+@dataclass(frozen=True, slots=True)
+class SelectionPolicy:
+    """Stable local selection limits; exploration is a constraint, not a score bonus."""
+
+    minimum_score: float = 0.2
+    target: int = 20
+    core_cap: int = 14
+    adjacent_cap: int = 4
+    exploration_cap: int = 2
+    minimum_judged_quality: float = 0.25
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.minimum_score <= 1 or not 0 <= self.minimum_judged_quality <= 1:
+            raise ValueError("selection thresholds must be normalized")
+        if self.target < 1 or min(self.core_cap, self.adjacent_cap, self.exploration_cap) < 0:
+            raise ValueError("selection counts are invalid")
+        if self.exploration_cap < 1:
+            raise ValueError("selection policy must reserve an exploration slot")
 
 
 def pre_rank(
@@ -25,8 +57,9 @@ def pre_rank(
     institution_bonus: float = 0.5,
     identity_bonus_cap: float = 1.0,
     weight_set: WeightSet = DEFAULT_WEIGHT_SET,
+    extra_features: Mapping[str, tuple[NormalizedFeature, ...]] | None = None,
 ) -> tuple[ScoredCandidate, ...]:
-    """Score public candidates locally using derived profile terms and categories."""
+    """Score public candidates with applicability-aware normalized local features."""
 
     terms = frozenset(profile.topics)
     core = frozenset(profile.core_categories)
@@ -35,17 +68,13 @@ def pre_rank(
     for candidate in candidates:
         words = set(_WORDS.findall((candidate.title + " " + candidate.summary).casefold()))
         lexical = min(len(words & terms) / max(len(terms), 1), 1.0)
-        category = (
-            1.0
-            if set(candidate.categories) & core
-            else 0.5
-            if set(candidate.categories) & adjacent
-            else 0.1
-        )
+        source = _source(candidate.categories, core, adjacent)
+        category = {"core": 1.0, "adjacent": 0.6, "exploration": 0.2}[source]
         age = max((now.astimezone(UTC) - candidate.published).total_seconds() / 86400, 0.0)
         recency = max(0.0, 1.0 - age / 14)
-        source = "core" if category == 2.0 else "adjacent" if category == 1.0 else "exploration"
-        raw_feedback = (feedback_adjustments or {}).get(candidate.arxiv_id.canonical, 0.0)
+        feedback_key = candidate.arxiv_id.canonical
+        has_feedback = feedback_adjustments is not None and feedback_key in feedback_adjustments
+        raw_feedback = (feedback_adjustments or {}).get(feedback_key, 0.0)
         feedback = min(max(raw_feedback, 0.0), 1.0)
         negative_feedback = min(max(-raw_feedback, 0.0), 1.0)
         author_match = _matches_any(candidate.authors, profile.watched_authors)
@@ -56,29 +85,80 @@ def pre_rank(
         watched_institution = min(
             watched_institution, max(0.0, identity_bonus_cap - watched_author)
         )
+        facet_match = _facet_match(words, profile)
         features = (
-            NormalizedFeature("lexical", lexical, True, 1.0, "local-profile"),
-            NormalizedFeature("category", category, True, 1.0, "local-profile"),
-            NormalizedFeature("recency", recency, True, 1.0, "arxiv-metadata"),
-            NormalizedFeature("feedback", feedback, bool(feedback_adjustments), 1.0, "feedback-v2"),
             NormalizedFeature(
-                "identity", watched_author + watched_institution, True, 1.0, "watchlist"
+                "lexical", lexical, True, 1.0, "local-profile", FeatureGroup.INTEREST
+            ),
+            NormalizedFeature(
+                "category", category, True, 1.0, "local-profile", FeatureGroup.INTEREST
+            ),
+            NormalizedFeature(
+                "facet",
+                facet_match,
+                bool(profile.preference_facets),
+                1.0 if profile.preference_facets else 0.0,
+                "local-profile",
+                FeatureGroup.INTEREST,
+            ),
+            NormalizedFeature(
+                "recency",
+                recency,
+                True,
+                1.0,
+                "arxiv-metadata",
+                FeatureGroup.RECENCY,
+                candidate.updated,
+            ),
+            NormalizedFeature(
+                "feedback",
+                feedback,
+                has_feedback,
+                1.0 if has_feedback else 0.0,
+                "feedback-v2",
+                FeatureGroup.FEEDBACK,
+            ),
+            NormalizedFeature(
+                "negative_feedback",
+                negative_feedback,
+                raw_feedback < 0,
+                1.0 if raw_feedback < 0 else 0.0,
+                "feedback-v2",
+                FeatureGroup.FEEDBACK,
+            ),
+            NormalizedFeature(
+                "identity",
+                watched_author + watched_institution,
+                bool(profile.watched_authors or profile.watched_institutions),
+                1.0 if profile.watched_authors or profile.watched_institutions else 0.0,
+                "watchlist",
+                FeatureGroup.IDENTITY,
             ),
         )
-        interest = (lexical + category) / 2
-        score = (
-            weight_set.interest * interest
-            + weight_set.recency * recency
-            + weight_set.feedback * feedback
-            + weight_set.identity * (watched_author + watched_institution)
-            - weight_set.negative_feedback_cap * negative_feedback
+        merged_features = _merge_features(features, (extra_features or {}).get(feedback_key, ()))
+        score, group_values, group_contributions, penalty = _score_features(
+            merged_features, weight_set
         )
-        components = tuple((feature.name, feature.value) for feature in features) + (
-            ("negative_feedback", negative_feedback),
+        components = tuple((feature.name, feature.value) for feature in merged_features) + (
             ("watched_author", watched_author),
             ("watched_institution", watched_institution),
+            *((f"{group.value}_value", value) for group, value in group_values.items()),
+            *(
+                (f"{group.value}_contribution", value)
+                for group, value in group_contributions.items()
+            ),
+            ("negative_feedback_penalty", penalty),
         )
-        scored.append(ScoredCandidate(candidate, max(score, 0.0), components, source))
+        scored.append(
+            ScoredCandidate(
+                candidate,
+                score,
+                components,
+                source,
+                merged_features,
+                weight_set.version,
+            )
+        )
     return tuple(sorted(scored, key=lambda item: (-item.score, item.candidate.arxiv_id.canonical)))
 
 
@@ -88,29 +168,48 @@ def _matches_any(values: tuple[str, ...], identities: tuple[WatchedIdentity, ...
 
 
 def select_diverse(
-    scored: tuple[ScoredCandidate, ...], minimum_score: float = 0.2, target: int = 20
+    scored: tuple[ScoredCandidate, ...],
+    minimum_score: float = 0.2,
+    target: int = 20,
+    *,
+    policy: SelectionPolicy | None = None,
 ) -> tuple[ScoredCandidate, ...]:
     """Select quality-qualified results with quotas and author/topic diversity."""
 
-    quotas = {"core": 14, "adjacent": 4, "exploration": 2}
+    if policy is None and minimum_score > 1:
+        return ()
+    active_policy = policy or SelectionPolicy(minimum_score=minimum_score, target=target)
+    quotas = {
+        "core": active_policy.core_cap,
+        "adjacent": active_policy.adjacent_cap,
+        "exploration": active_policy.exploration_cap,
+    }
     selected: list[ScoredCandidate] = []
     authors: Counter[str] = Counter()
     topic_sets: list[set[str]] = []
-    qualified = [item for item in scored if item.score >= minimum_score]
-    for source in ("core", "adjacent", "exploration"):
+    qualified = [
+        item
+        for item in scored
+        if item.score >= active_policy.minimum_score
+        and _meets_judged_quality(item, active_policy.minimum_judged_quality)
+    ]
+    # Reserve an eligible exploration slot before source-cap filling. Presentation order is applied
+    # after selection, so this does not turn the batch into a source-grouped reading experience.
+    for source in ("exploration", "core", "adjacent"):
         for item in qualified:
             if (
                 item.source == source
                 and len([value for value in selected if value.source == source]) < quotas[source]
                 and _diverse(item, authors, topic_sets)
+                and len(selected) < active_policy.target
             ):
                 _append(item, selected, authors, topic_sets)
     for item in qualified:
-        if len(selected) >= target:
+        if len(selected) >= active_policy.target:
             break
         if item not in selected and _diverse(item, authors, topic_sets):
             _append(item, selected, authors, topic_sets)
-    return tuple(selected[:target])
+    return tuple(selected[: active_policy.target])
 
 
 def order_recommendations(
@@ -153,3 +252,84 @@ def _append(
     selected.append(item)
     authors.update(author.casefold() for author in item.candidate.authors)
     topic_sets.append(set(_WORDS.findall(item.candidate.title.casefold())))
+
+
+def _source(categories: tuple[str, ...], core: frozenset[str], adjacent: frozenset[str]) -> str:
+    if set(categories) & core:
+        return "core"
+    if set(categories) & adjacent:
+        return "adjacent"
+    return "exploration"
+
+
+def _facet_match(words: set[str], profile: RemoteProfile) -> float:
+    canonical_words = frozenset(
+        token for word in words for token in word.split("-") if len(token) >= 3
+    )
+    facets = []
+    for facet in profile.preference_facets:
+        facet_terms = _facet_tokens(facet.value)
+        if facet_terms and facet_terms <= canonical_words:
+            facets.append(facet)
+    return min(sum(facet.score * facet.confidence for facet in facets) / 3, 1.0)
+
+
+def _merge_features(
+    local: tuple[NormalizedFeature, ...], extra: tuple[NormalizedFeature, ...]
+) -> tuple[NormalizedFeature, ...]:
+    names = [feature.name for feature in (*local, *extra)]
+    if len(set(names)) != len(names):
+        raise ValueError("ranking feature names must be unique per candidate")
+    return (*local, *extra)
+
+
+def _score_features(
+    features: tuple[NormalizedFeature, ...], weight_set: WeightSet
+) -> tuple[float, dict[FeatureGroup, float], dict[FeatureGroup, float], float]:
+    by_group: dict[FeatureGroup, list[NormalizedFeature]] = {group: [] for group in FeatureGroup}
+    negative = 0.0
+    for feature in features:
+        if feature.name == "negative_feedback":
+            if feature.applicable:
+                negative = max(negative, feature.value * feature.confidence)
+            continue
+        if feature.applicable:
+            by_group[feature.group].append(feature)
+    group_values = {
+        group: _group_value(group, values) for group, values in by_group.items() if values
+    }
+    available_weight = sum(weight_set.group_weights[group] for group in group_values)
+    contributions = {
+        group: (weight_set.group_weights[group] * value / available_weight)
+        for group, value in group_values.items()
+        if available_weight > 0
+    }
+    penalty = weight_set.negative_feedback_cap * negative
+    return max(sum(contributions.values()) - penalty, 0.0), group_values, contributions, penalty
+
+
+def _group_value(group: FeatureGroup, features: list[NormalizedFeature]) -> float:
+    importance = (
+        {
+            "lexical": 0.55,
+            "category": 0.3,
+            "facet": 0.15,
+        }
+        if group is FeatureGroup.INTEREST
+        else {}
+    )
+    weighted = [(feature, importance.get(feature.name, 1.0)) for feature in features]
+    denominator = sum(weight for _, weight in weighted)
+    return (
+        sum(feature.value * feature.confidence * weight for feature, weight in weighted)
+        / denominator
+    )
+
+
+def _meets_judged_quality(item: ScoredCandidate, minimum: float) -> bool:
+    values = [
+        feature.value * feature.confidence
+        for feature in item.feature_values
+        if feature.group is FeatureGroup.SCIENTIFIC_QUALITY and feature.applicable
+    ]
+    return not values or sum(values) / len(values) >= minimum

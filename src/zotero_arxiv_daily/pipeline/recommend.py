@@ -11,9 +11,21 @@ from time import perf_counter
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
 from zotero_arxiv_daily.core.errors import ExternalServiceError
-from zotero_arxiv_daily.llm.batch import ProposalProvider, propose_bounded
+from zotero_arxiv_daily.llm.batch import (
+    DEFAULT_REQUEST_BYTE_LIMIT,
+    DEFAULT_REQUEST_TOKEN_LIMIT,
+    ProposalProvider,
+    propose_bounded,
+)
 from zotero_arxiv_daily.llm.cache import ProposalCache
-from zotero_arxiv_daily.llm.contracts import ModelProposal, parse_proposals
+from zotero_arxiv_daily.llm.contracts import (
+    Explanation,
+    JudgeAssessment,
+    ModelProposal,
+    QualityDimension,
+    parse_proposals,
+)
+from zotero_arxiv_daily.llm.refinement import StructuredProvider, run_explanations, run_judgments
 from zotero_arxiv_daily.profile.models import RemoteProfile
 from zotero_arxiv_daily.ranking.models import (
     RECOMMENDATION_RUN_MANIFEST_SCHEMA_VERSION,
@@ -21,8 +33,15 @@ from zotero_arxiv_daily.ranking.models import (
     RecommendationRecord,
     RecommendationRunManifest,
     RecommendationSet,
+    ScoredCandidate,
 )
 from zotero_arxiv_daily.ranking.select import order_recommendations, pre_rank, select_diverse
+from zotero_arxiv_daily.ranking.weights import (
+    DEFAULT_WEIGHT_SET,
+    FeatureGroup,
+    NormalizedFeature,
+    WeightSet,
+)
 
 
 def recommend(
@@ -35,6 +54,7 @@ def recommend(
     institution_bonus: float = 0.5,
     identity_bonus_cap: float = 1.0,
     feedback_adjustments: Mapping[str, float] | None = None,
+    weight_set: WeightSet = DEFAULT_WEIGHT_SET,
 ) -> tuple[RecommendationRecord, ...]:
     """Apply local policy after model validation; models cannot select URLs or state changes."""
 
@@ -48,6 +68,7 @@ def recommend(
             author_bonus=author_bonus,
             institution_bonus=institution_bonus,
             identity_bonus_cap=identity_bonus_cap,
+            weight_set=weight_set,
         )
     )
     records: list[RecommendationRecord] = []
@@ -91,6 +112,14 @@ def package_result(
     estimated_cost_usd: float = 0.0,
     duration_seconds: float = 0.0,
     completed_at: datetime | None = None,
+    estimated_input_tokens: int = 0,
+    estimated_output_tokens: int = 0,
+    judge_requests: int = 0,
+    explanation_requests: int = 0,
+    judge_cache_hits: int = 0,
+    explanation_cache_hits: int = 0,
+    retry_count: int = 0,
+    weight_set_version: str = DEFAULT_WEIGHT_SET.version,
 ) -> tuple[RecommendationSet, RecommendationRunManifest]:
     """Create versioned recommendation data and non-sensitive operational metadata."""
 
@@ -105,18 +134,26 @@ def package_result(
         profile.source_library_synced_at,
     )
     manifest = RecommendationRunManifest(
-        RECOMMENDATION_RUN_MANIFEST_SCHEMA_VERSION,
-        model,
-        candidate_count,
-        len(records),
-        model_requests,
-        cache_hits,
-        estimated_tokens,
-        estimated_cost_usd,
-        duration_seconds,
-        started_at,
-        completion,
-        profile.source_library_version,
+        schema_version=RECOMMENDATION_RUN_MANIFEST_SCHEMA_VERSION,
+        model=model,
+        candidate_count=candidate_count,
+        recommendation_count=len(records),
+        model_requests=model_requests,
+        cache_hits=cache_hits,
+        estimated_tokens=estimated_tokens,
+        estimated_cost_usd=estimated_cost_usd,
+        duration_seconds=duration_seconds,
+        generation_started_at=started_at,
+        generation_completed_at=completion,
+        profile_library_version=profile.source_library_version,
+        estimated_input_tokens=estimated_input_tokens,
+        estimated_output_tokens=estimated_output_tokens,
+        judge_requests=judge_requests,
+        explanation_requests=explanation_requests,
+        judge_cache_hits=judge_cache_hits,
+        explanation_cache_hits=explanation_cache_hits,
+        retry_count=retry_count,
+        weight_set_version=weight_set_version,
     )
     return result, manifest
 
@@ -138,6 +175,12 @@ def run_recommendation(
     institution_bonus: float = 0.5,
     identity_bonus_cap: float = 1.0,
     completed_at: datetime | None = None,
+    weight_set: WeightSet = DEFAULT_WEIGHT_SET,
+    batch_size: int = 40,
+    max_requests: int = 2,
+    max_request_tokens: int = DEFAULT_REQUEST_TOKEN_LIMIT,
+    max_request_bytes: int = DEFAULT_REQUEST_BYTE_LIMIT,
+    retries: int = 1,
 ) -> tuple[RecommendationSet, RecommendationRunManifest]:
     """Run bounded, cached model work while retaining final policy locally."""
 
@@ -155,12 +198,21 @@ def run_recommendation(
         author_bonus=author_bonus,
         institution_bonus=institution_bonus,
         identity_bonus_cap=identity_bonus_cap,
+        weight_set=weight_set,
     )[:pre_rank_limit]
     selected_candidates = tuple(item.candidate for item in ranked)
     cached, missing, cache_hits = _load_cached_proposals(
         selected_candidates, profile, cache, prompt_version, model
     )
-    fresh, usage = propose_bounded(provider, [_model_candidate(item) for item in missing])
+    fresh, usage = propose_bounded(
+        provider,
+        [_model_candidate(item) for item in missing],
+        batch_size=batch_size,
+        max_requests=max_requests,
+        max_tokens=max_request_tokens,
+        max_request_bytes=max_request_bytes,
+        retries=retries,
+    )
     candidates_by_id = {candidate.arxiv_id.canonical: candidate for candidate in missing}
     for proposal in fresh:
         candidate = candidates_by_id[proposal.arxiv_id]
@@ -183,6 +235,7 @@ def run_recommendation(
         institution_bonus=institution_bonus,
         identity_bonus_cap=identity_bonus_cap,
         feedback_adjustments=feedback_adjustments,
+        weight_set=weight_set,
     )
     duration_seconds = perf_counter() - started
     estimated_cost_usd = estimate_cost(usage.estimated_tokens) if estimate_cost else 0.0
@@ -198,6 +251,199 @@ def run_recommendation(
         estimated_cost_usd=estimated_cost_usd,
         duration_seconds=duration_seconds,
         completed_at=completed_at or datetime.now(UTC),
+        estimated_input_tokens=usage.estimated_tokens,
+        retry_count=usage.retry_count,
+        weight_set_version=weight_set.version,
+    )
+
+
+def run_refined_recommendation(
+    candidates: tuple[ArxivCandidate, ...],
+    profile: RemoteProfile,
+    now: datetime,
+    provider: StructuredProvider,
+    cache: ProposalCache,
+    *,
+    model: str,
+    output_language: str,
+    excluded_ids: frozenset[str] = frozenset(),
+    feedback_adjustments: Mapping[str, float] | None = None,
+    pre_rank_limit: int = 60,
+    estimate_cost: Callable[[int], float] | None = None,
+    author_bonus: float = 0.75,
+    institution_bonus: float = 0.5,
+    identity_bonus_cap: float = 1.0,
+    weight_set: WeightSet = DEFAULT_WEIGHT_SET,
+    allow_preference_context: bool = False,
+    completed_at: datetime | None = None,
+    judge_batch_size: int = 40,
+    explanation_batch_size: int = 20,
+    max_request_tokens: int = DEFAULT_REQUEST_TOKEN_LIMIT,
+    max_request_bytes: int = DEFAULT_REQUEST_BYTE_LIMIT,
+    max_requests: int = 4,
+    retries: int = 1,
+) -> tuple[RecommendationSet, RecommendationRunManifest]:
+    """Run judge-v1 then final-only explain-v1 without granting model control over selection."""
+
+    if not 1 <= pre_rank_limit <= 80:
+        raise ValueError("pre_rank_limit must be between 1 and 80")
+    started = perf_counter()
+    eligible = tuple(
+        candidate for candidate in candidates if candidate.arxiv_id.canonical not in excluded_ids
+    )
+    coarse = pre_rank(
+        eligible,
+        profile,
+        now,
+        feedback_adjustments,
+        author_bonus=author_bonus,
+        institution_bonus=institution_bonus,
+        identity_bonus_cap=identity_bonus_cap,
+        weight_set=weight_set,
+    )[:pre_rank_limit]
+    shortlisted = tuple(item.candidate for item in coarse)
+    if not shortlisted:
+        return package_result(
+            (),
+            profile,
+            now,
+            model=model,
+            candidate_count=0,
+            model_requests=0,
+            cache_hits=0,
+            estimated_tokens=0,
+            duration_seconds=perf_counter() - started,
+            completed_at=completed_at or datetime.now(UTC),
+            weight_set_version=weight_set.version,
+        )
+    profile_digest = _profile_digest(profile, feedback_adjustments)
+    judge_records = tuple(_judge_record(candidate) for candidate in shortlisted)
+    judge_keys = _layered_keys(
+        cache,
+        "judge",
+        shortlisted,
+        profile_digest,
+        model,
+        output_language,
+        "judge-v1",
+    )
+    judgments, judge_usage = run_judgments(
+        provider,
+        cache,
+        judge_records,
+        cache_keys=judge_keys,
+        allowed_evidence_fields=frozenset(
+            {"title", "authors", "categories", "published", "summary"}
+        ),
+        batch_size=judge_batch_size,
+        max_request_tokens=max_request_tokens,
+        max_request_bytes=max_request_bytes,
+        max_requests=max_requests,
+        retries=retries,
+    )
+    assessments = {assessment.arxiv_id: assessment for assessment in judgments}
+    judged = pre_rank(
+        shortlisted,
+        profile,
+        now,
+        feedback_adjustments,
+        author_bonus=author_bonus,
+        institution_bonus=institution_bonus,
+        identity_bonus_cap=identity_bonus_cap,
+        weight_set=weight_set,
+        extra_features={
+            identifier: _assessment_features(value) for identifier, value in assessments.items()
+        },
+    )
+    selected = select_diverse(judged)
+    if not selected:
+        tokens = judge_usage.estimated_input_tokens + judge_usage.estimated_output_tokens
+        return package_result(
+            (),
+            profile,
+            now,
+            model=model,
+            candidate_count=len(shortlisted),
+            model_requests=judge_usage.requests,
+            cache_hits=judge_usage.cache_hits,
+            estimated_tokens=tokens,
+            estimated_cost_usd=estimate_cost(tokens) if estimate_cost else 0.0,
+            duration_seconds=perf_counter() - started,
+            completed_at=completed_at or datetime.now(UTC),
+            estimated_input_tokens=judge_usage.estimated_input_tokens,
+            estimated_output_tokens=judge_usage.estimated_output_tokens,
+            judge_requests=judge_usage.requests,
+            judge_cache_hits=judge_usage.cache_hits,
+            retry_count=judge_usage.retry_count,
+            weight_set_version=weight_set.version,
+        )
+    explanation_records = tuple(
+        _explanation_record(
+            item, assessments[item.candidate.arxiv_id.canonical], allow_preference_context
+        )
+        for item in selected
+    )
+    selected_candidates = tuple(item.candidate for item in selected)
+    explanation_keys = _layered_keys(
+        cache,
+        "explain",
+        selected_candidates,
+        profile_digest,
+        model,
+        output_language,
+        "explain-v1:preference-context-v1"
+        if allow_preference_context
+        else "explain-v1:public-only",
+    )
+    explanation_fields = {
+        "title",
+        "authors",
+        "categories",
+        "published",
+        "summary",
+        "quality_dimensions",
+        "quality_uncertainty",
+    }
+    if allow_preference_context:
+        explanation_fields.add("relevance_signals")
+    explanations, explain_usage = run_explanations(
+        provider,
+        cache,
+        explanation_records,
+        cache_keys=explanation_keys,
+        allowed_evidence_fields=frozenset(explanation_fields),
+        batch_size=explanation_batch_size,
+        max_request_tokens=max_request_tokens,
+        max_request_bytes=max_request_bytes,
+        max_requests=max_requests,
+        retries=retries,
+    )
+    records = _refined_records(
+        selected, assessments, {item.arxiv_id: item for item in explanations}
+    )
+    input_tokens = judge_usage.estimated_input_tokens + explain_usage.estimated_input_tokens
+    output_tokens = judge_usage.estimated_output_tokens + explain_usage.estimated_output_tokens
+    tokens = input_tokens + output_tokens
+    return package_result(
+        records,
+        profile,
+        now,
+        model=model,
+        candidate_count=len(shortlisted),
+        model_requests=judge_usage.requests + explain_usage.requests,
+        cache_hits=judge_usage.cache_hits + explain_usage.cache_hits,
+        estimated_tokens=tokens,
+        estimated_cost_usd=estimate_cost(tokens) if estimate_cost else 0.0,
+        duration_seconds=perf_counter() - started,
+        completed_at=completed_at or datetime.now(UTC),
+        estimated_input_tokens=input_tokens,
+        estimated_output_tokens=output_tokens,
+        judge_requests=judge_usage.requests,
+        explanation_requests=explain_usage.requests,
+        judge_cache_hits=judge_usage.cache_hits,
+        explanation_cache_hits=explain_usage.cache_hits,
+        retry_count=judge_usage.retry_count + explain_usage.retry_count,
+        weight_set_version=weight_set.version,
     )
 
 
@@ -236,13 +482,15 @@ def parse_cached_proposal(payload: str, arxiv_id: str) -> tuple[ModelProposal, .
 
 
 def _model_candidate(candidate: ArxivCandidate) -> dict[str, object]:
+    """Project public metadata without truncating complete paper text fields."""
+
     return {
         "arxiv_id": candidate.arxiv_id.canonical,
-        "title": candidate.title[:500],
+        "title": candidate.title,
         "authors": list(candidate.authors[:10]),
         "categories": list(candidate.categories[:10]),
         "published": candidate.published.isoformat(),
-        "summary": candidate.summary[:400],
+        "summary": candidate.summary,
     }
 
 
@@ -254,3 +502,176 @@ def _candidate_fingerprint(candidate: ArxivCandidate) -> str:
     }
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _judge_record(candidate: ArxivCandidate) -> dict[str, object]:
+    """Keep the quality-assessment contract limited to bounded public arXiv metadata."""
+
+    return _model_candidate(candidate)
+
+
+def _assessment_features(assessment: JudgeAssessment) -> tuple[NormalizedFeature, ...]:
+    dimensions = dict(assessment.dimensions)
+    quality_dimensions = (
+        QualityDimension.CONTRIBUTION_CLARITY,
+        QualityDimension.NOVELTY,
+        QualityDimension.INSIGHT_PLAUSIBILITY,
+        QualityDimension.METHODOLOGICAL_EVIDENCE,
+        QualityDimension.EMPIRICAL_EVIDENCE,
+    )
+    quality_values: list[float] = []
+    for dimension in quality_dimensions:
+        value = dimensions[dimension]
+        if value is not None:
+            quality_values.append(value)
+    confidence = 1.0 - assessment.uncertainty
+    quality = sum(quality_values) / len(quality_values) if quality_values else 0.0
+    reproducibility = dimensions[QualityDimension.REPRODUCIBILITY]
+    return (
+        NormalizedFeature(
+            "judge_quality",
+            quality,
+            bool(quality_values),
+            confidence if quality_values else 0.0,
+            "judge-v1",
+            FeatureGroup.SCIENTIFIC_QUALITY,
+        ),
+        NormalizedFeature(
+            "judge_reproducibility",
+            reproducibility if reproducibility is not None else 0.0,
+            reproducibility is not None,
+            confidence if reproducibility is not None else 0.0,
+            "judge-v1",
+            FeatureGroup.REPRODUCIBILITY,
+        ),
+    )
+
+
+def _explanation_record(
+    item: ScoredCandidate, assessment: JudgeAssessment, allow_preference_context: bool
+) -> dict[str, object]:
+    record = _model_candidate(item.candidate)
+    record["quality_dimensions"] = {
+        dimension.value: value for dimension, value in assessment.dimensions
+    }
+    record["quality_uncertainty"] = assessment.uncertainty
+    if allow_preference_context:
+        record["relevance_signals"] = list(_relevance_signals(item))
+    return record
+
+
+def _relevance_signals(item: ScoredCandidate) -> tuple[str, ...]:
+    components = dict(item.components)
+    signals: list[str] = []
+    if components.get("lexical", 0.0) > 0:
+        signals.append("topic_overlap")
+    if components.get("category", 0.0) >= 0.6:
+        signals.append("category_overlap")
+    if components.get("facet", 0.0) > 0:
+        signals.append("preference_facet_overlap")
+    if components.get("feedback", 0.0) > 0:
+        signals.append("explicit_positive_feedback")
+    if components.get("watched_author", 0.0) > 0:
+        signals.append("watched_author")
+    if components.get("watched_institution", 0.0) > 0:
+        signals.append("watched_institution")
+    return tuple(signals[:4])
+
+
+def _refined_records(
+    selected: tuple[ScoredCandidate, ...],
+    assessments: Mapping[str, JudgeAssessment],
+    explanations: Mapping[str, Explanation],
+) -> tuple[RecommendationRecord, ...]:
+    records: list[RecommendationRecord] = []
+    for item in selected:
+        identifier = item.candidate.arxiv_id.canonical
+        assessment = assessments[identifier]
+        explanation = explanations[identifier]
+        components = dict(item.components)
+        identities = tuple(
+            name
+            for name in ("watched_author", "watched_institution")
+            if components.get(name, 0.0) > 0
+        )
+        records.append(
+            RecommendationRecord(
+                item.candidate,
+                item.score,
+                item.source,
+                _quality_score(assessment),
+                explanation.summary,
+                explanation.reason,
+                identities,
+                explanation.limitation,
+                assessment.uncertainty,
+            )
+        )
+    return order_recommendations(tuple(records))
+
+
+def _quality_score(assessment: JudgeAssessment) -> float:
+    dimensions = {
+        QualityDimension.CONTRIBUTION_CLARITY,
+        QualityDimension.NOVELTY,
+        QualityDimension.INSIGHT_PLAUSIBILITY,
+        QualityDimension.METHODOLOGICAL_EVIDENCE,
+        QualityDimension.EMPIRICAL_EVIDENCE,
+    }
+    values: list[float] = []
+    for dimension, value in assessment.dimensions:
+        if dimension in dimensions and value is not None:
+            values.append(value)
+    return sum(values) / len(values) if values else 0.0
+
+
+def _profile_digest(
+    profile: RemoteProfile, feedback_adjustments: Mapping[str, float] | None
+) -> str:
+    """Hash local ranking inputs for local cache invalidation without serializing them to logs."""
+
+    value = {
+        "schema_version": profile.schema_version,
+        "library_version": profile.source_library_version,
+        "topics": profile.topics,
+        "core_categories": profile.core_categories,
+        "adjacent_categories": profile.adjacent_categories,
+        "representative_terms": profile.representative_terms,
+        "watched_authors": tuple(
+            (identity.name, identity.aliases) for identity in profile.watched_authors
+        ),
+        "watched_institutions": tuple(
+            (identity.name, identity.aliases) for identity in profile.watched_institutions
+        ),
+        "facets": tuple(
+            (facet.kind, facet.value, facet.score, facet.confidence)
+            for facet in profile.preference_facets
+        ),
+        "feedback": tuple(sorted((feedback_adjustments or {}).items())),
+    }
+    encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+def _layered_keys(
+    cache: ProposalCache,
+    layer: str,
+    candidates: tuple[ArxivCandidate, ...],
+    profile_digest: str,
+    model: str,
+    output_language: str,
+    contract_version: str,
+) -> dict[str, str]:
+    return {
+        candidate.arxiv_id.canonical: cache.layered_key(
+            layer=layer,
+            arxiv_id=candidate.arxiv_id.canonical,
+            candidate_fingerprint=_candidate_fingerprint(candidate),
+            protected_profile_digest=profile_digest,
+            evidence_snapshot="no-public-evidence-v1",
+            contract_version=contract_version,
+            model=model,
+            output_language=output_language,
+        )
+        for candidate in candidates
+    }

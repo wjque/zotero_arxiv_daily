@@ -205,20 +205,40 @@ class FeedbackLedgerStore:
     def position_outcomes(self) -> tuple[PositionOutcomeRate, ...]:
         """Report explicit outcomes conditional on recorded impression position only."""
 
-        impressions: dict[str, FeedbackEvent] = {}
+        impressions: dict[str, list[FeedbackEvent]] = {}
         outcomes: dict[int, list[FeedbackEvent]] = {}
         for event in self.events():
             if event.event_type is FeedbackEventType.IMPRESSION:
-                impressions[event.paper_id] = event
+                impressions.setdefault(event.paper_id, []).append(event)
+        superseded = {
+            event.supersedes_event_id
+            for event in self.events()
+            if event.supersedes_event_id is not None
+        }
         for event in self.events():
-            if event.outcome is not None and event.paper_id in impressions:
-                rank = impressions[event.paper_id].displayed_rank
-                if rank is not None:
-                    outcomes.setdefault(rank, []).append(event)
+            if event.outcome is None or event.event_id in superseded:
+                continue
+            candidates = [
+                impression
+                for impression in impressions.get(event.paper_id, [])
+                if impression.occurred_at <= event.occurred_at
+                and (event.batch_id is None or impression.batch_id == event.batch_id)
+            ]
+            if not candidates and event.batch_id is not None:
+                candidates = [
+                    impression
+                    for impression in impressions.get(event.paper_id, [])
+                    if impression.occurred_at <= event.occurred_at
+                ]
+            if candidates:
+                impression = max(candidates, key=lambda item: (item.occurred_at, item.event_id))
+                if impression.displayed_rank is not None:
+                    outcomes.setdefault(impression.displayed_rank, []).append(event)
         counts: dict[int, int] = {}
-        for impression in impressions.values():
-            if impression.displayed_rank is not None:
-                counts[impression.displayed_rank] = counts.get(impression.displayed_rank, 0) + 1
+        for values in impressions.values():
+            for impression in values:
+                if impression.displayed_rank is not None:
+                    counts[impression.displayed_rank] = counts.get(impression.displayed_rank, 0) + 1
         return tuple(
             PositionOutcomeRate(
                 rank,

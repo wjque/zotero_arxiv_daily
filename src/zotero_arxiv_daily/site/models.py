@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from zotero_arxiv_daily.core.time import product_date, require_aware_utc
 from zotero_arxiv_daily.ranking.models import RecommendationSet
 
-PUBLISHABLE_SCHEMA_VERSION = 3
+PUBLISHABLE_SCHEMA_VERSION = 4
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _REVISION = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
@@ -46,25 +46,39 @@ class PublishedRecommendation:
     published_on: str
     summary: str
     reason: str
-    confidence: float
+    quality: float
     quota_source: str
     abstract_url: str
     pdf_url: str
     preference_signals: tuple[str, ...] = ()
+    limitation: str | None = None
+    uncertainty: float | None = None
 
     def __post_init__(self) -> None:
         if not self.arxiv_id.strip() or not self.title.strip() or not self.authors:
             raise ValueError("published recommendations require an ID, title, and authors")
-        if not 0 <= self.confidence <= 1:
-            raise ValueError("published recommendation confidence must be between zero and one")
+        if not 0 <= self.quality <= 1:
+            raise ValueError("published recommendation quality must be between zero and one")
+        if self.uncertainty is not None and not 0 <= self.uncertainty <= 1:
+            raise ValueError("published recommendation uncertainty must be between zero and one")
         if self.quota_source not in {"core", "adjacent", "exploration"}:
             raise ValueError("published recommendation has an invalid quota source")
         if not set(self.preference_signals) <= {"watched_author", "watched_institution"}:
             raise ValueError("published recommendation has an invalid preference signal")
+        if self.limitation is not None and (
+            not self.limitation.strip() or not 8 <= len(self.limitation) <= 800
+        ):
+            raise ValueError("published recommendation limitation is invalid")
         for value in (self.abstract_url, self.pdf_url):
             parsed = urlparse(value)
             if parsed.scheme != "https" or parsed.hostname != "arxiv.org":
                 raise ValueError("published recommendation links must use arxiv.org HTTPS URLs")
+
+    @property
+    def confidence(self) -> float:
+        """Compatibility alias for pre-v0.2 readers; new payloads use ``quality``."""
+
+        return self.quality
 
 
 @dataclass(frozen=True, slots=True)
@@ -91,16 +105,25 @@ class PublishedRecommendationSet:
             return {
                 "schema_version": 1,
                 "generated_at": self.generation_started_at,
-                "recommendations": [
-                    {
-                        key: value
-                        for key, value in asdict(record).items()
-                        if key != "preference_signals"
-                    }
-                    for record in self.recommendations
-                ],
+                "recommendations": tuple(
+                    _record_payload(record, schema_version=1) for record in self.recommendations
+                ),
             }
-        return asdict(self)
+        return {
+            "schema_version": self.schema_version,
+            "generation_started_at": self.generation_started_at,
+            "generation_completed_at": self.generation_completed_at,
+            "artifact_built_at": self.artifact_built_at,
+            "profile_library_version": self.profile_library_version,
+            "profile_snapshot_at": self.profile_snapshot_at,
+            "profile_schema_version": self.profile_schema_version,
+            "workflow_run": asdict(self.workflow_run) if self.workflow_run else None,
+            "output_language": self.output_language,
+            "recommendations": tuple(
+                _record_payload(record, schema_version=self.schema_version)
+                for record in self.recommendations
+            ),
+        }
 
 
 def write_published_set(value: PublishedRecommendationSet, path: Path) -> None:
@@ -122,8 +145,10 @@ def read_published_set(path: Path) -> PublishedRecommendationSet:
             return _read_v1(value)
         if schema_version == 2:
             return _read_v2(value)
-        if schema_version == PUBLISHABLE_SCHEMA_VERSION:
+        if schema_version == 3:
             return _read_v3(value)
+        if schema_version == PUBLISHABLE_SCHEMA_VERSION:
+            return _read_v4(value)
         raise ValueError
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise ValueError(f"publishable recommendation input is invalid: {path}") from error
@@ -156,6 +181,8 @@ def make_published_set(
                 record.candidate.abstract_url,
                 record.candidate.pdf_url,
                 record.identity_matches,
+                record.limitation,
+                record.uncertainty,
             )
             for record in result.recommendations
         ),
@@ -223,9 +250,39 @@ def _read_v3(value: dict[str, object]) -> PublishedRecommendationSet:
         raise ValueError
     workflow = value["workflow_run"]
     return PublishedRecommendationSet(
-        PUBLISHABLE_SCHEMA_VERSION,
+        3,
         _instant_text(value["generation_started_at"]),
         _records(value["recommendations"], version=2),
+        _optional_instant(value["generation_completed_at"]),
+        _optional_instant(value["artifact_built_at"]),
+        _positive_int(value["profile_library_version"]),
+        _optional_instant(value["profile_snapshot_at"]),
+        _positive_int(value["profile_schema_version"]),
+        _workflow_run(workflow) if workflow is not None else None,
+        _nonempty_string(value["output_language"]),
+    )
+
+
+def _read_v4(value: dict[str, object]) -> PublishedRecommendationSet:
+    fields = {
+        "schema_version",
+        "generation_started_at",
+        "generation_completed_at",
+        "artifact_built_at",
+        "profile_library_version",
+        "profile_snapshot_at",
+        "profile_schema_version",
+        "workflow_run",
+        "output_language",
+        "recommendations",
+    }
+    if set(value) != fields:
+        raise ValueError
+    workflow = value["workflow_run"]
+    return PublishedRecommendationSet(
+        PUBLISHABLE_SCHEMA_VERSION,
+        _instant_text(value["generation_started_at"]),
+        _records(value["recommendations"], version=4),
         _optional_instant(value["generation_completed_at"]),
         _optional_instant(value["artifact_built_at"]),
         _positive_int(value["profile_library_version"]),
@@ -243,7 +300,7 @@ def _records(value: object, *, version: int) -> tuple[PublishedRecommendation, .
 
 
 def _published_recommendation(value: object, *, version: int) -> PublishedRecommendation:
-    fields = {
+    base_fields = {
         "arxiv_id",
         "title",
         "authors",
@@ -251,18 +308,34 @@ def _published_recommendation(value: object, *, version: int) -> PublishedRecomm
         "published_on",
         "summary",
         "reason",
-        "confidence",
         "quota_source",
         "abstract_url",
         "pdf_url",
     }
-    if version == 2:
-        fields.add("preference_signals")
-    if not isinstance(value, dict) or set(value) != fields:
+    fields = set(base_fields)
+    legacy_v2_fields = fields | {"confidence"}
+    if version >= 2:
+        legacy_v2_fields.add("preference_signals")
+    if version >= 4:
+        current_fields = fields | {"quality", "uncertainty", "preference_signals", "limitation"}
+        legacy_v4_fields = legacy_v2_fields | {"limitation"}
+        legacy_v4_fields = legacy_v4_fields | {"confidence"}
+    elif version >= 2:
+        current_fields = fields | {"quality", "uncertainty", "preference_signals"}
+        legacy_v4_fields = fields | {"confidence", "preference_signals"}
+    else:
+        current_fields = fields | {"confidence"}
+        legacy_v4_fields = current_fields
+    accepted_fields = (current_fields, legacy_v4_fields)
+    if not isinstance(value, dict) or set(value) not in accepted_fields:
         raise ValueError
     authors = _strings(value["authors"])
     categories = _strings(value["categories"])
-    signals = _strings(value["preference_signals"]) if version == 2 else ()
+    signals = _strings(value["preference_signals"]) if version >= 2 else ()
+    limitation = _optional_limited_string(value["limitation"]) if version >= 4 else None
+    is_current = "quality" in value
+    quality = float(value["quality"] if is_current else value["confidence"])
+    uncertainty = _optional_normalized(value["uncertainty"]) if is_current else None
     return PublishedRecommendation(
         _nonempty_string(value["arxiv_id"]),
         _nonempty_string(value["title"]),
@@ -271,11 +344,13 @@ def _published_recommendation(value: object, *, version: int) -> PublishedRecomm
         _nonempty_string(value["published_on"]),
         _nonempty_string(value["summary"]),
         _nonempty_string(value["reason"]),
-        float(value["confidence"]),
+        quality,
         _nonempty_string(value["quota_source"]),
         _nonempty_string(value["abstract_url"]),
         _nonempty_string(value["pdf_url"]),
         signals,
+        limitation,
+        uncertainty,
     )
 
 
@@ -322,6 +397,51 @@ def _nonempty_string(value: object) -> str:
     if not isinstance(value, str) or not value.strip():
         raise ValueError
     return value
+
+
+def _optional_limited_string(value: object) -> str | None:
+    if value is None:
+        return None
+    if not isinstance(value, str) or not 8 <= len(value) <= 800 or not value.strip():
+        raise ValueError
+    return value
+
+
+def _optional_normalized(value: object) -> float | None:
+    if value is None:
+        return None
+    if not isinstance(value, (int, float)) or isinstance(value, bool) or not 0 <= value <= 1:
+        raise ValueError
+    return float(value)
+
+
+def _record_payload(record: PublishedRecommendation, *, schema_version: int) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "arxiv_id": record.arxiv_id,
+        "title": record.title,
+        "authors": list(record.authors),
+        "categories": list(record.categories),
+        "published_on": record.published_on,
+        "summary": record.summary,
+        "reason": record.reason,
+        "quota_source": record.quota_source,
+        "abstract_url": record.abstract_url,
+        "pdf_url": record.pdf_url,
+    }
+    if schema_version <= 3:
+        payload["confidence"] = record.quality
+        if schema_version >= 2:
+            payload["preference_signals"] = list(record.preference_signals)
+        return payload
+    payload.update(
+        {
+            "quality": record.quality,
+            "uncertainty": record.uncertainty,
+            "preference_signals": list(record.preference_signals),
+            "limitation": record.limitation,
+        }
+    )
+    return payload
 
 
 def _strings(value: object) -> tuple[str, ...]:

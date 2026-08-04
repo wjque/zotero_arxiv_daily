@@ -10,6 +10,16 @@ on:
         required: false
         default: false
         type: boolean
+      enable_llm_refinement:
+        description: Use the v0.2 judge/explain candidate path for this manual canary
+        required: false
+        default: false
+        type: boolean
+      approve_llm_preference_context:
+        description: Send the audited categorical preference context during this manual canary
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -35,14 +45,143 @@ jobs:
       - name: Install locked dependencies
         run: python -m pip install uv && uv sync --locked --all-groups
       - name: Restore protected run state
+        id: restore-state
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
         run: |
-          git fetch origin state || true
-          if git show-ref --verify --quiet refs/remotes/origin/state; then
-            git worktree add runtime/state origin/state
-            cp runtime/state/*.json runtime/ 2>/dev/null || true
+          set -euo pipefail
+          mkdir -p runtime
+          echo "reconcile=false" >> "$GITHUB_OUTPUT"
+          set +e
+          git ls-remote --exit-code --heads origin state > runtime/state-ref.txt 2> runtime/state-fetch-error.txt
+          state_status=$?
+          set -e
+          case "$state_status" in
+            0)
+              git fetch --no-tags origin state
+              git worktree add --detach runtime/state FETCH_HEAD
+              for required in arxiv-state.json feedback-state.json recommendation-history.json; do
+                test -f "runtime/state/$required" || { echo "Persisted state is missing $required" >&2; exit 1; }
+                cp "runtime/state/$required" runtime/
+              done
+              for optional in proposal-cache.json ranking-weights.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json; do
+                if test -f "runtime/state/$optional"; then cp "runtime/state/$optional" runtime/; fi
+              done
+              ;;
+            2)
+              echo "No persisted state branch exists; starting an explicitly empty initial state."
+              ;;
+            *)
+              cat runtime/state-fetch-error.txt >&2
+              echo "Unable to determine whether the persisted state branch exists." >&2
+              exit "$state_status"
+              ;;
+          esac
+          if test -f runtime/deployment-receipt.json; then
+            receipt_status=$(python - <<'PY'
+          import json
+          from pathlib import Path
+
+          value = json.loads(Path("runtime/deployment-receipt.json").read_text(encoding="utf-8"))
+          if not isinstance(value, dict) or value.get("schema_version") != 1:
+              raise SystemExit("deployment receipt schema is invalid")
+          status = value.get("status")
+          if status not in {"prepared", "deployed", "reconciled"}:
+              raise SystemExit("deployment receipt status is invalid")
+          print(status)
+          PY
+            )
+            if test "$receipt_status" = "prepared"; then
+              test -f runtime/pending-publishable-recommendations.json
+              test -f runtime/pending-recommendation-history.json
+              receipt_run_id=$(python - <<'PY'
+          import json
+          from pathlib import Path
+
+          value = json.loads(Path("runtime/deployment-receipt.json").read_text(encoding="utf-8"))
+          print(value["workflow_run_id"])
+          PY
+              )
+              receipt_attempt=$(python - <<'PY'
+          import json
+          from pathlib import Path
+
+          value = json.loads(Path("runtime/deployment-receipt.json").read_text(encoding="utf-8"))
+          print(value["workflow_run_attempt"])
+          PY
+              )
+              gh run view "$receipt_run_id" --attempt "$receipt_attempt" --json jobs > runtime/prior-run.json
+              deployment_succeeded=$(python - <<'PY'
+          import json
+          from pathlib import Path
+
+          value = json.loads(Path("runtime/prior-run.json").read_text(encoding="utf-8"))
+          print(
+              "true"
+              if any(
+                  step.get("name") == "Deploy GitHub Pages"
+                  and step.get("conclusion") == "success"
+                  for job in value.get("jobs", [])
+                  for step in job.get("steps", [])
+              )
+              else "false"
+          )
+          PY
+              )
+              if test "$deployment_succeeded" = "true"; then
+                echo "reconcile=true" >> "$GITHUB_OUTPUT"
+                echo "A previous Pages deployment is awaiting state reconciliation."
+              else
+                echo "The previous prepared batch was not deployed; it will be replaced." >&2
+                rm -f runtime/deployment-receipt.json runtime/pending-publishable-recommendations.json runtime/pending-recommendation-history.json
+              fi
+            fi
           fi
+      - name: Reconcile previously deployed batch
+        if: steps.restore-state.outputs.reconcile == 'true'
+        run: |
+          set -euo pipefail
+          uv run zotero-arxiv-daily feedback record-impressions --input runtime/pending-publishable-recommendations.json
+          cp runtime/pending-recommendation-history.json runtime/recommendation-history.next.json
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path("runtime/deployment-receipt.json")
+          value = json.loads(path.read_text(encoding="utf-8"))
+          value["status"] = "reconciled"
+          value["reconciled_by_workflow_run_id"] = int(os.environ["GITHUB_RUN_ID"])
+          value["reconciled_by_workflow_run_attempt"] = int(os.environ["GITHUB_RUN_ATTEMPT"])
+          path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+          PY
+      - name: Persist reconciled run state
+        if: steps.restore-state.outputs.reconcile == 'true'
+        run: |
+          set -euo pipefail
+          if git worktree list --porcelain | grep -q '^worktree .*/runtime/state$'; then
+            git worktree remove runtime/state --force
+          fi
+          if git show-ref --verify --quiet refs/remotes/origin/state; then
+            git worktree add -B state runtime/state origin/state
+          else
+            git worktree add -B state runtime/state
+          fi
+          cp runtime/arxiv-state.json runtime/feedback-state.json runtime/ranking-weights.json runtime/deployment-receipt.json runtime/state/
+          if test -f runtime/proposal-cache.json; then cp runtime/proposal-cache.json runtime/state/; fi
+          cp runtime/pending-recommendation-history.json runtime/state/recommendation-history.json
+          rm -f runtime/state/pending-publishable-recommendations.json runtime/state/pending-recommendation-history.json
+          git -C runtime/state add -A -- '*.json'
+          git -C runtime/state -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'chore(state): reconcile deployed batch'
+          for attempt in 1 2 3; do
+            if git -C runtime/state push origin HEAD:state; then exit 0; fi
+            test "$attempt" -lt 3 || exit 1
+            sleep $((attempt * 2))
+          done
       - name: Check generation window
         id: generation-window
+        if: steps.restore-state.outputs.reconcile != 'true'
         run: |
           arguments=()
           if [ "${{ inputs.allow_peak_generation }}" = "true" ]; then
@@ -56,13 +195,15 @@ jobs:
             exit 1
           fi
       - name: Retrieve feedback and generate static site
-        if: steps.generation-window.outputs.decision == 'allowed'
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
         env:
           GH_TOKEN: ${{ github.token }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
           PAGES_PASSPHRASE: ${{ secrets.PAGES_PASSPHRASE }}
           REMOTE_PROFILE: ${{ secrets.ZOTERO_ARXIV_DAILY_PROFILE }}
           ZAD_GITHUB_REPOSITORY: ${{ github.repository }}
+          ZAD_LLM_REFINEMENT_ENABLED: ${{ inputs.enable_llm_refinement && 'true' || 'false' }}
+          ZAD_LLM_PREFERENCE_CONTEXT_APPROVED: ${{ inputs.approve_llm_preference_context && 'true' || 'false' }}
         run: |
           mkdir -p runtime
           printf '%s' "$REMOTE_PROFILE" > runtime/remote-profile.json
@@ -73,30 +214,107 @@ jobs:
           ZAD_DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" uv run zotero-arxiv-daily recommend run --profile runtime/remote-profile.json --candidate-state runtime/arxiv-state.json --workflow-run-id "${{ github.run_id }}" --workflow-run-attempt "${{ github.run_attempt }}" --source-revision "${{ github.sha }}"
           ZAD_PAGES_PASSPHRASE="$PAGES_PASSPHRASE" uv run zotero-arxiv-daily site build
           uv run python scripts/check_artifacts.py
-      - name: Configure GitHub Pages
-        if: steps.generation-window.outputs.decision == 'allowed'
-        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
-      - name: Upload GitHub Pages artifact
-        if: steps.generation-window.outputs.decision == 'allowed'
-        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
-        with:
-          path: runtime/site
-      - name: Deploy GitHub Pages
-        if: steps.generation-window.outputs.decision == 'allowed'
-        id: deployment
-        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
-      - name: Persist successful run state
-        if: steps.generation-window.outputs.decision == 'allowed'
+      - name: Prepare generated state for deployment
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        env:
+          ARTIFACT_DIGEST: ${{ hashFiles('runtime/site/data/*') }}
         run: |
-          uv run zotero-arxiv-daily feedback record-impressions --input runtime/publishable-recommendations.json
-          git worktree remove runtime/state --force 2>/dev/null || true
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+
+          source = Path("runtime/publishable-recommendations.json")
+          value = json.loads(source.read_text(encoding="utf-8"))
+          started = value.get("generation_started_at", value.get("generated_at"))
+          if not isinstance(started, str) or not started:
+              raise SystemExit("publishable batch has no generation timestamp")
+          receipt = {
+              "schema_version": 1,
+              "workflow_run_id": int(os.environ["GITHUB_RUN_ID"]),
+              "workflow_run_attempt": int(os.environ["GITHUB_RUN_ATTEMPT"]),
+              "artifact_digest": os.environ["ARTIFACT_DIGEST"],
+              "deployment_url": "",
+              "batch_id": f"published-{started}",
+              "status": "prepared",
+          }
+          Path("runtime/deployment-receipt.json").write_text(
+              json.dumps(receipt, sort_keys=True, separators=(",", ":")), encoding="utf-8"
+          )
+          PY
+          cp runtime/publishable-recommendations.json runtime/pending-publishable-recommendations.json
+          cp runtime/recommendation-history.next.json runtime/pending-recommendation-history.json
+          if git worktree list --porcelain | grep -q '^worktree .*/runtime/state$'; then
+            git worktree remove runtime/state --force
+          fi
           if git show-ref --verify --quiet refs/remotes/origin/state; then
             git worktree add -B state runtime/state origin/state
           else
             git worktree add -B state runtime/state
           fi
-          cp runtime/arxiv-state.json runtime/feedback-state.json runtime/proposal-cache.json runtime/state/
+          cp runtime/arxiv-state.json runtime/feedback-state.json runtime/ranking-weights.json runtime/deployment-receipt.json runtime/pending-publishable-recommendations.json runtime/pending-recommendation-history.json runtime/state/
+          if test -f runtime/proposal-cache.json; then cp runtime/proposal-cache.json runtime/state/; fi
+          git -C runtime/state add -A -- '*.json'
+          git -C runtime/state -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'chore(state): prepare daily pipeline state'
+          for attempt in 1 2 3; do
+            if git -C runtime/state push origin HEAD:state; then exit 0; fi
+            test "$attempt" -lt 3 || exit 1
+            sleep $((attempt * 2))
+          done
+      - name: Configure GitHub Pages
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - name: Upload GitHub Pages artifact
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: runtime/site
+      - name: Deploy GitHub Pages
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        id: deployment
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+      - name: Record deployment identity
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        env:
+          DEPLOYMENT_URL: ${{ steps.deployment.outputs.page_url }}
+          ARTIFACT_DIGEST: ${{ hashFiles('runtime/site/data/*') }}
+        run: |
+          set -euo pipefail
+          python - <<'PY'
+          import json
+          import os
+          from pathlib import Path
+          path = Path("runtime/deployment-receipt.json")
+          receipt = json.loads(path.read_text(encoding="utf-8"))
+          if not isinstance(receipt, dict) or receipt.get("status") != "prepared":
+              raise SystemExit("prepared deployment receipt is missing")
+          receipt["status"] = "deployed"
+          receipt["deployment_url"] = os.environ.get("DEPLOYMENT_URL", "")
+          receipt["artifact_digest"] = os.environ["ARTIFACT_DIGEST"]
+          path.write_text(json.dumps(receipt, sort_keys=True, separators=(",", ":")), encoding="utf-8")
+          PY
+      - name: Persist successful run state
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        run: |
+          set -euo pipefail
+          uv run zotero-arxiv-daily feedback record-impressions --input runtime/publishable-recommendations.json
+          if git worktree list --porcelain | grep -q '^worktree .*/runtime/state$'; then
+            git worktree remove runtime/state --force
+          fi
+          if git show-ref --verify --quiet refs/remotes/origin/state; then
+            git worktree add -B state runtime/state origin/state
+          else
+            git worktree add -B state runtime/state
+          fi
+          cp runtime/arxiv-state.json runtime/feedback-state.json runtime/ranking-weights.json runtime/deployment-receipt.json runtime/state/
+          if test -f runtime/proposal-cache.json; then cp runtime/proposal-cache.json runtime/state/; fi
           cp runtime/recommendation-history.next.json runtime/state/recommendation-history.json
-          git -C runtime/state add '*.json'
-          git -C runtime/state -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'chore(state): update daily pipeline state' || true
-          git -C runtime/state push origin HEAD:state
+          rm -f runtime/state/pending-publishable-recommendations.json runtime/state/pending-recommendation-history.json
+          git -C runtime/state add -A -- '*.json'
+          git -C runtime/state -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'chore(state): update daily pipeline state'
+          for attempt in 1 2 3; do
+            if git -C runtime/state push origin HEAD:state; then exit 0; fi
+            test "$attempt" -lt 3 || exit 1
+            sleep $((attempt * 2))
+          done

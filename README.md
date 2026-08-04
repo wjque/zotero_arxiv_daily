@@ -4,8 +4,9 @@ Zotero arXiv Daily is a local-first tool that builds a compact interest profile 
 Zotero library and uses it to produce a daily arXiv reading list. Raw Zotero records,
 notes, annotations, and PDF content remain local.
 
-The v0.1.2 release adds a meaningful profile snapshot timestamp, compact batch status, and
-deterministic recommendation ordering. Current work is tracked in the active
+The v0.2.0 release candidate adds normalized personalized ranking, guarded feedback learning,
+offline shadow evaluation, efficient two-stage LLM refinement, and a backward-compatible encrypted
+site schema. Production canary and release status are tracked in the active
 [v0.2.0 plan](docs/plans/v0.2.0-personalized-ranking-quality.md).
 
 ## Requirements
@@ -138,8 +139,9 @@ is normalized automatically. For an arXiv paper without a DOI, add a manual tag 
 `ranking-reason:novel-insight`; keep free-text rationale in Zotero or another ignored local file.
 
 Every offline evaluation freezes a separate immutable snapshot with the corpus digest, cutoff,
-stable-anchor, rolling, temporal, and pairwise paper identities. Fewer than 40 independent labels
-is reported as provisional and cannot approve automatic tuning.
+stable-anchor, rolling, temporal, and pairwise paper identities. Sparse or non-overlapping samples
+remain explicit uncertainty-bearing reference results: they cannot authorize automatic tuning, while
+an operator may explicitly review a reversible canary.
 
 ## Optional public evidence enrichment
 
@@ -171,6 +173,50 @@ run, while ranking adjustments activate only after a guarded weekly evaluation (
 default). The previous successful snapshot remains active after empty, insufficient, or failed
 weeks. `ZAD_FEEDBACK_ACTIVATION_INTERVAL_DAYS` and `ZAD_FEEDBACK_MINIMUM_INDEPENDENT_PAPERS` adjust
 the local operational bounds; no feedback prose is sent through GitHub Issues or published output.
+
+## Ranking evaluation and refinement
+
+The local ranker uses an immutable, versioned weight-set registry at
+`runtime/ranking-weights.json`. The daily path creates the conservative `coarse-v1` definition if
+the registry is absent. A changed weight-set must be evaluated locally before an explicit activation;
+the registry can point back to a previously registered version without rewriting its definition.
+
+```bash
+uv run zotero-arxiv-daily ranking weights
+uv run zotero-arxiv-daily ranking register-weights --version coarse-v2 \
+  --interest 0.50 --recency 0.10 --feedback 0.15 --identity 0.10 \
+  --scientific-quality 0.07 --reproducibility 0.03 --context 0.05 \
+  --negative-feedback-cap 0.20
+```
+
+Freeze the evolving local corpus before comparing the normalized ranker with the v0.1.2 baseline:
+
+```bash
+uv run zotero-arxiv-daily evaluate snapshot
+uv run zotero-arxiv-daily evaluate shadow \
+  --profile runtime/remote-profile.json \
+  --candidate-state runtime/arxiv-state.json \
+  --snapshot-id SNAPSHOT_ID
+```
+
+The ignored `runtime/shadow-report.json` contains aggregate metrics and feature-group ablations
+only. Sparse or zero-overlap reports remain uncertainty-bearing reference results: they cannot
+authorize automatic tuning, but an explicit operator may review and approve a reversible canary.
+Shadow evaluation itself never changes feedback state or publishes a batch. Activation requires an
+eligible report for the same version:
+
+```bash
+uv run zotero-arxiv-daily ranking activate-weights \
+  --version coarse-v2 --shadow-report runtime/shadow-report.json
+```
+
+`ZAD_LLM_REFINEMENT_ENABLED` remains `false` by default. When enabled after an approved release
+decision, the pipeline judges only the coarse shortlist with `judge-v1`, applies local selection,
+and asks `explain-v1` for only the final papers. `ZAD_LLM_PREFERENCE_CONTEXT_APPROVED` is a separate
+opt-in for fixed categorical relevance signals such as `topic_overlap`; it never sends terms, notes,
+annotations, collection names, labels, or feedback prose. Do not set it without documenting the
+field-level trust-boundary approval. Batch size, request token/byte limits, retry count, request
+count, and provider output tokens are bounded by the `ZAD_LLM_*` settings in `.env.example`.
 
 To publish a validated exported profile to a GitHub Actions Secret, authenticate `gh` locally and
 set `ZAD_GITHUB_REPOSITORY`; the profile JSON is sent on standard input rather than in command-line
@@ -214,9 +260,15 @@ prepared during generation and promoted to the protected `state` branch only aft
 succeeds. Existing v0.1.0 profiles, arXiv state, and publishable payloads remain readable; rebuilding
 and republishing the profile activates schema-v2 watchlists.
 
+When retrieval uses a recent validated snapshot after bounded failure, the private run manifest records
+the degraded reason and source checkpoint, and the published site marks the candidate pool as degraded.
+
+Publishable site schema v4 adds an optional model-generated limitation/uncertainty note. Readers
+retain exact v1-v3 adapters and omit the field when it is unavailable.
+
 The `Profile snapshot` is the time of the successful local Zotero synchronization used to build
-the protected profile. Rebuild and republish the profile after upgrading to v0.1.2 to populate this
-field; legacy protected profiles remain valid but omit it.
+the protected profile. Rebuild and republish the profile after upgrading to v0.2.0 to populate the
+v4 weighted facets; legacy protected profiles remain valid and use explicit unavailable defaults.
 
 Within a generated batch, cards are ordered by local profile relevance, then validated model quality,
 then the latest arXiv revision time and canonical ID. Candidate quotas and diversity constraints still
@@ -229,6 +281,9 @@ uv run ruff format --check .
 uv run ruff check .
 uv run mypy
 uv run pytest
+npm ci
+npx playwright install chromium
+npm run test:e2e
 uv build
 python scripts/check_artifacts.py
 ```

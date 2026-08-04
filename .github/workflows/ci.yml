@@ -28,6 +28,12 @@ jobs:
         run: uv run mypy
       - name: Tests
         run: uv run pytest
+      - name: Install browser test dependencies
+        run: npm ci
+      - name: Install Chromium
+        run: npx playwright install --with-deps chromium
+      - name: Browser tests
+        run: npm run test:e2e
       - name: Build package
         run: uv build
       - name: Inspect artifacts

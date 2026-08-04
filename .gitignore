@@ -34,6 +34,9 @@ dist/
 
 # Frontend dependency and build caches
 node_modules/
+.test-artifacts/
+test-results/
+playwright-report/
 .vite/
 *.tsbuildinfo
 

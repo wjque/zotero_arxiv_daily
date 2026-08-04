@@ -46,7 +46,8 @@ def test_client_retries_only_transient_transport_failures() -> None:
     client = ArxivClient(Transport([TransientArxivError("429"), _FEED]), sleep=sleeps.append)
 
     assert len(client.query("cat:cs.LG", 0, 1)) == 1
-    assert sleeps == [1.0]
+    assert sleeps[0] == 1.0
+    assert sleeps[1] == pytest.approx(3.0, rel=0.01)
 
 
 class CandidateClient:
@@ -211,3 +212,24 @@ def test_candidate_state_v3_reader_leaves_unknown_doi_unset(tmp_path: Path) -> N
     )
 
     assert ArxivStateStore(path).candidates()[0].doi is None
+
+
+def test_transient_outage_uses_recent_pool_without_advancing_checkpoint(tmp_path: Path) -> None:
+    store = ArxivStateStore(tmp_path / "arxiv-state.json")
+    previous = datetime(2026, 8, 1, tzinfo=UTC)
+    candidate = _candidate(1, previous)
+    store.commit(RetrievalCheckpoint(previous), (candidate,))
+
+    result = retrieve(
+        CandidateClient([ExternalServiceError("timeout")]),
+        store,
+        ("cs.LG",),
+        previous + timedelta(days=1),
+    )
+
+    assert result.degraded is True
+    assert result.candidates == (candidate,)
+    assert store.checkpoint() == RetrievalCheckpoint(previous)
+    assert store.retrieval_status()[0] is True
+    assert result.degraded_reason == "timeout"
+    assert store.retrieval_status()[1] == "timeout"

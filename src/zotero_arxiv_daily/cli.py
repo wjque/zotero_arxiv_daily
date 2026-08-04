@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Sequence
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -18,10 +18,15 @@ from zotero_arxiv_daily.core.config import load_config
 from zotero_arxiv_daily.core.errors import ApplicationError
 from zotero_arxiv_daily.core.time import generation_decision
 from zotero_arxiv_daily.doctor import Diagnostic, doctor_exit_code, run_doctor
+from zotero_arxiv_daily.evaluation.calibration import run_shadow_evaluation, write_shadow_report
 from zotero_arxiv_daily.evaluation.corpus import (
     CorpusStore,
     CuratedCorpusMapping,
     ZoteroCorpusItem,
+)
+from zotero_arxiv_daily.evaluation.offline import (
+    EvaluationSnapshotStore,
+    make_evaluation_snapshot,
 )
 from zotero_arxiv_daily.evidence.openalex import OpenAlexClient, OpenAlexEvidenceEnricher
 from zotero_arxiv_daily.evidence.storage import EvidenceCache
@@ -29,7 +34,7 @@ from zotero_arxiv_daily.feedback.ingest import FeedbackStateStore, read_github_i
 from zotero_arxiv_daily.feedback.ledger import FeedbackLedgerStore
 from zotero_arxiv_daily.llm.cache import ProposalCache
 from zotero_arxiv_daily.llm.deepseek import DeepSeekClient
-from zotero_arxiv_daily.pipeline.recommend import run_recommendation
+from zotero_arxiv_daily.pipeline.recommend import run_recommendation, run_refined_recommendation
 from zotero_arxiv_daily.profile.export import write_remote_profile
 from zotero_arxiv_daily.profile.models import WatchedIdentity
 from zotero_arxiv_daily.profile.service import (
@@ -38,6 +43,7 @@ from zotero_arxiv_daily.profile.service import (
     publish_github_secret,
     read_remote_profile,
 )
+from zotero_arxiv_daily.ranking.weights import DEFAULT_WEIGHT_SET, WeightSet, WeightSetRegistry
 from zotero_arxiv_daily.site.build import build_site
 from zotero_arxiv_daily.site.models import (
     WorkflowRun,
@@ -103,6 +109,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--input", type=Path, default=Path("runtime/publishable-recommendations.json")
     )
     site_build_parser.add_argument("--output", type=Path, default=Path("runtime/site"))
+    site_build_parser.add_argument(
+        "--candidate-state", type=Path, default=Path("runtime/arxiv-state.json")
+    )
     feedback_parser = subcommands.add_parser("feedback", help="Ingest validated browser feedback")
     feedback_commands = feedback_parser.add_subparsers(dest="feedback_command", required=True)
     feedback_ingest_parser = feedback_commands.add_parser(
@@ -156,6 +165,66 @@ def build_parser() -> argparse.ArgumentParser:
         "--cache", type=Path, default=Path("runtime/openalex-evidence.json")
     )
     evidence_enrich_parser.add_argument("--limit", type=int, default=40)
+    evaluate_parser = subcommands.add_parser(
+        "evaluate", help="Create immutable local snapshots and non-mutating ranking shadow reports"
+    )
+    evaluate_commands = evaluate_parser.add_subparsers(dest="evaluate_command", required=True)
+    evaluate_snapshot_parser = evaluate_commands.add_parser(
+        "snapshot", help="Freeze the current local curated corpus for an offline replay"
+    )
+    evaluate_snapshot_parser.add_argument(
+        "--corpus-state", type=Path, default=Path("runtime/curated-corpus.json")
+    )
+    evaluate_snapshot_parser.add_argument(
+        "--snapshots", type=Path, default=Path("runtime/evaluation-snapshots")
+    )
+    evaluate_snapshot_parser.add_argument("--anchor-paper-id", action="append", default=[])
+    evaluate_snapshot_parser.add_argument("--rolling-days", type=int, default=30)
+    evaluate_shadow_parser = evaluate_commands.add_parser(
+        "shadow", help="Compare a candidate weight set with the frozen v0.1.2 ranker"
+    )
+    evaluate_shadow_parser.add_argument("--profile", type=Path, required=True)
+    evaluate_shadow_parser.add_argument("--candidate-state", type=Path, required=True)
+    evaluate_shadow_parser.add_argument(
+        "--feedback-state", type=Path, default=Path("runtime/feedback-state.json")
+    )
+    evaluate_shadow_parser.add_argument("--snapshot-id", required=True)
+    evaluate_shadow_parser.add_argument(
+        "--snapshots", type=Path, default=Path("runtime/evaluation-snapshots")
+    )
+    evaluate_shadow_parser.add_argument("--weight-state", type=Path)
+    evaluate_shadow_parser.add_argument(
+        "--output", type=Path, default=Path("runtime/shadow-report.json")
+    )
+    ranking_parser = subcommands.add_parser(
+        "ranking", help="Manage local immutable ranking weight-set versions"
+    )
+    ranking_commands = ranking_parser.add_subparsers(dest="ranking_command", required=True)
+    ranking_list_parser = ranking_commands.add_parser(
+        "weights", help="List registered weight-set versions"
+    )
+    ranking_list_parser.add_argument("--state", type=Path)
+    ranking_register_parser = ranking_commands.add_parser(
+        "register-weights", help="Register one immutable locally evaluated weight set"
+    )
+    ranking_register_parser.add_argument("--state", type=Path)
+    ranking_register_parser.add_argument("--version", required=True)
+    ranking_register_parser.add_argument("--interest", required=True, type=float)
+    ranking_register_parser.add_argument("--recency", required=True, type=float)
+    ranking_register_parser.add_argument("--feedback", required=True, type=float)
+    ranking_register_parser.add_argument("--identity", required=True, type=float)
+    ranking_register_parser.add_argument("--scientific-quality", required=True, type=float)
+    ranking_register_parser.add_argument("--reproducibility", required=True, type=float)
+    ranking_register_parser.add_argument("--context", required=True, type=float)
+    ranking_register_parser.add_argument("--negative-feedback-cap", required=True, type=float)
+    ranking_activate_parser = ranking_commands.add_parser(
+        "activate-weights", help="Point local ranking at a previously registered version"
+    )
+    ranking_activate_parser.add_argument("--state", type=Path)
+    ranking_activate_parser.add_argument("--version", required=True)
+    ranking_activate_parser.add_argument(
+        "--shadow-report", type=Path, required=True, help="Eligible local report for this version"
+    )
     arxiv_parser = subcommands.add_parser("arxiv", help="Retrieve public arXiv candidate metadata")
     arxiv_commands = arxiv_parser.add_subparsers(dest="arxiv_command", required=True)
     arxiv_retrieve_parser = arxiv_commands.add_parser(
@@ -179,6 +248,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     recommend_run_parser.add_argument(
         "--cache", type=Path, default=Path("runtime/proposal-cache.json")
+    )
+    recommend_run_parser.add_argument(
+        "--weight-state", type=Path, help="Local immutable ranking weight-set registry"
     )
     recommend_run_parser.add_argument(
         "--output", type=Path, default=Path("runtime/publishable-recommendations.json")
@@ -262,12 +334,14 @@ def main(argv: Sequence[str] | None = None) -> int:
             print("protected profile published to GitHub Secret")
             return 0
         if args.command == "site" and args.site_command == "build":
+            candidate_pool_status = ArxivStateStore(args.candidate_state).retrieval_status()
             site_result = build_site(
                 read_published_set(args.input),
                 args.output,
                 public_output=config.public_output,
                 passphrase=config.pages_passphrase,
                 feedback_repository=config.github_repository,
+                candidate_pool_status=candidate_pool_status,
             )
             mode = "public" if not site_result.encrypted else "encrypted"
             print(f"{mode} site built: {site_result.recommendation_count} recommendations")
@@ -339,6 +413,86 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"public evidence enriched: {len(evidence)} candidates, {available} context records"
             )
             return 0
+        if args.command == "evaluate" and args.evaluate_command == "snapshot":
+            created_at = datetime.now(UTC)
+            corpus = CorpusStore(args.corpus_state).snapshot(created_at)
+            snapshot = make_evaluation_snapshot(
+                corpus,
+                created_at=created_at,
+                anchor_paper_ids=tuple(args.anchor_paper_id),
+                rolling_days=args.rolling_days,
+            )
+            EvaluationSnapshotStore(args.snapshots).write(snapshot)
+            print(
+                "evaluation snapshot written: "
+                f"{snapshot.snapshot_id}, {snapshot.label_count} labels"
+            )
+            return 0
+        if args.command == "evaluate" and args.evaluate_command == "shadow":
+            snapshot = EvaluationSnapshotStore(args.snapshots).read(args.snapshot_id)
+            weight_registry = WeightSetRegistry(
+                args.weight_state or Path(config.ranking_weight_state_path)
+            )
+            weight_registry.register(DEFAULT_WEIGHT_SET)
+            report = run_shadow_evaluation(
+                ArxivStateStore(args.candidate_state).candidates(),
+                read_remote_profile(args.profile),
+                snapshot,
+                snapshot.cutoff_at,
+                feedback_adjustments=FeedbackStateStore(args.feedback_state).adjustments(),
+                weight_set=weight_registry.active(),
+            )
+            write_shadow_report(report, args.output)
+            gate_state = (
+                "eligible-for-manual-review"
+                if report.eligible_for_activation and report.warnings
+                else "eligible"
+                if report.eligible_for_activation
+                else "provisional-or-blocked"
+            )
+            print(f"shadow evaluation written: {gate_state}, {len(report.reasons)} gate reason(s)")
+            return 0
+        if args.command == "ranking" and args.ranking_command == "weights":
+            registry = WeightSetRegistry(args.state or Path(config.ranking_weight_state_path))
+            registry.register(DEFAULT_WEIGHT_SET)
+            versions = registry.versions()
+            active = registry.active().version
+            for weight_set in versions:
+                marker = "*" if weight_set.version == active else " "
+                print(f"{marker} {weight_set.version}")
+            return 0
+        if args.command == "ranking" and args.ranking_command == "register-weights":
+            registry = WeightSetRegistry(args.state or Path(config.ranking_weight_state_path))
+            weight_set = WeightSet(
+                args.version,
+                args.interest,
+                args.recency,
+                args.feedback,
+                args.identity,
+                args.scientific_quality,
+                args.reproducibility,
+                args.context,
+                args.negative_feedback_cap,
+            )
+            registered = registry.register(weight_set)
+            action = "registered" if registered else "already registered"
+            print(f"ranking weight set {action}: {weight_set.version}")
+            return 0
+        if args.command == "ranking" and args.ranking_command == "activate-weights":
+            registry = WeightSetRegistry(args.state or Path(config.ranking_weight_state_path))
+            try:
+                report = json.loads(args.shadow_report.read_text(encoding="utf-8"))
+            except (OSError, json.JSONDecodeError) as error:
+                raise ApplicationError("shadow report is unreadable") from error
+            if (
+                not isinstance(report, dict)
+                or report.get("weight_set_version") != args.version
+                or report.get("eligible_for_activation") is not True
+            ):
+                raise ApplicationError("shadow report does not approve this ranking weight set")
+            active_weight = registry.activate(args.version)
+            print(f"ranking weight set activated: {active_weight.version}")
+            return 0
         if args.command == "arxiv" and args.arxiv_command == "retrieve":
             profile = read_remote_profile(args.profile)
             categories = profile.core_categories + expand_one_hop(profile.core_categories)
@@ -354,26 +508,73 @@ def main(argv: Sequence[str] | None = None) -> int:
             feedback = FeedbackStateStore(args.feedback_state)
             started_at = datetime.now(UTC)
             history = RecommendationHistoryStore(args.history)
-            recommendation_set, manifest = run_recommendation(
-                ArxivStateStore(args.candidate_state).candidates(),
-                profile,
-                started_at,
-                DeepSeekClient(
-                    config.deepseek_api_key,
-                    timeout_seconds=config.deepseek_timeout_seconds,
+            weight_registry = WeightSetRegistry(
+                args.weight_state or Path(config.ranking_weight_state_path)
+            )
+            weight_registry.register(DEFAULT_WEIGHT_SET)
+            weight_set = weight_registry.active()
+            candidate_store = ArxivStateStore(args.candidate_state)
+            candidates = candidate_store.candidates()
+            provider = DeepSeekClient(
+                config.deepseek_api_key,
+                timeout_seconds=config.deepseek_timeout_seconds,
+                output_language=config.output_language,
+                max_output_tokens=config.llm_max_output_tokens,
+            )
+            feedback_adjustments = feedback.adjustments()
+            excluded_ids = history.excluded_ids(started_at, config.recommendation_suppression_days)
+            if config.llm_refinement_enabled:
+                recommendation_set, manifest = run_refined_recommendation(
+                    candidates,
+                    profile,
+                    started_at,
+                    provider,
+                    ProposalCache(args.cache),
+                    model="deepseek-v4-flash",
                     output_language=config.output_language,
-                ),
-                ProposalCache(args.cache),
-                prompt_version=f"recommendation-v2:{config.output_language.casefold()}",
-                model="deepseek-v4-flash",
-                feedback_adjustments=feedback.adjustments(),
-                pre_rank_limit=config.recommendation_candidate_limit,
-                excluded_ids=history.excluded_ids(
-                    started_at, config.recommendation_suppression_days
-                ),
-                author_bonus=config.author_preference_bonus,
-                institution_bonus=config.institution_preference_bonus,
-                identity_bonus_cap=config.identity_bonus_cap,
+                    allow_preference_context=config.llm_preference_context_approved,
+                    feedback_adjustments=feedback_adjustments,
+                    pre_rank_limit=config.recommendation_candidate_limit,
+                    excluded_ids=excluded_ids,
+                    author_bonus=config.author_preference_bonus,
+                    institution_bonus=config.institution_preference_bonus,
+                    identity_bonus_cap=config.identity_bonus_cap,
+                    weight_set=weight_set,
+                    judge_batch_size=config.llm_judge_batch_size,
+                    explanation_batch_size=config.llm_explanation_batch_size,
+                    max_request_tokens=config.llm_request_token_limit,
+                    max_request_bytes=config.llm_request_byte_limit,
+                    max_requests=config.llm_max_requests,
+                    retries=config.llm_retries,
+                )
+            else:
+                recommendation_set, manifest = run_recommendation(
+                    candidates,
+                    profile,
+                    started_at,
+                    provider,
+                    ProposalCache(args.cache),
+                    prompt_version=f"recommendation-v2:{config.output_language.casefold()}",
+                    model="deepseek-v4-flash",
+                    feedback_adjustments=feedback_adjustments,
+                    pre_rank_limit=config.recommendation_candidate_limit,
+                    excluded_ids=excluded_ids,
+                    author_bonus=config.author_preference_bonus,
+                    institution_bonus=config.institution_preference_bonus,
+                    identity_bonus_cap=config.identity_bonus_cap,
+                    weight_set=weight_set,
+                    batch_size=config.llm_judge_batch_size,
+                    max_requests=config.llm_max_requests,
+                    max_request_tokens=config.llm_request_token_limit,
+                    max_request_bytes=config.llm_request_byte_limit,
+                    retries=config.llm_retries,
+                )
+            degraded, degraded_reason, source_checkpoint = candidate_store.retrieval_status()
+            manifest = replace(
+                manifest,
+                candidate_pool_degraded=degraded,
+                candidate_pool_degraded_reason=degraded_reason,
+                candidate_pool_source_checkpoint=source_checkpoint,
             )
             workflow_run = _workflow_run(args, config.github_repository)
             write_published_set(

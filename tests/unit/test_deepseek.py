@@ -105,3 +105,20 @@ def test_deepseek_dns_failure_has_a_safe_diagnostic(monkeypatch: pytest.MonkeyPa
 
     with pytest.raises(ExternalServiceError, match="DNS resolution"):
         UrlLibJsonTransport().post("https://api.deepseek.com", {}, b"{}", 1.0)
+
+
+def test_deepseek_response_body_is_bounded(monkeypatch: pytest.MonkeyPatch) -> None:
+    class OversizedResponse:
+        def __enter__(self) -> OversizedResponse:
+            return self
+
+        def __exit__(self, *_: object) -> None:
+            return None
+
+        def read(self, maximum: int) -> bytes:
+            return b"x" * maximum
+
+    monkeypatch.setattr(deepseek, "urlopen", lambda *_, **__: OversizedResponse())
+
+    with pytest.raises(ExternalServiceError, match="exceeded the byte limit"):
+        UrlLibJsonTransport().post("https://api.deepseek.com", {}, b"{}", 1.0)

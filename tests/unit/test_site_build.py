@@ -5,7 +5,10 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
+
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate, ArxivId
+from zotero_arxiv_daily.core.errors import ConfigurationError
 from zotero_arxiv_daily.ranking.models import RecommendationRecord, RecommendationSet
 from zotero_arxiv_daily.site.build import build_site
 from zotero_arxiv_daily.site.models import (
@@ -71,6 +74,40 @@ def test_public_site_is_explicit_and_contains_accessible_feedback_controls(tmp_p
     assert "item=>item.published_on))].sort().reverse()" in js
 
 
+def test_site_config_exposes_degraded_candidate_pool_freshness(tmp_path: Path) -> None:
+    output = tmp_path / "site"
+    source_checkpoint = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
+
+    build_site(
+        make_published_set(_recommendations()),
+        output,
+        public_output=True,
+        passphrase=None,
+        candidate_pool_status=(True, "arXiv timeout", source_checkpoint),
+    )
+
+    config = json.loads((output / "data/site-config.json").read_text(encoding="utf-8"))
+    js = (output / "assets/app.js").read_text(encoding="utf-8")
+    assert config["freshness"] == {
+        "degraded": True,
+        "reason": "arXiv timeout",
+        "source_checkpoint": source_checkpoint.isoformat(),
+    }
+    assert "Candidate pool" in js
+    assert "source_checkpoint" in js
+
+
+def test_site_rejects_unbounded_candidate_pool_diagnostic(tmp_path: Path) -> None:
+    with pytest.raises(ConfigurationError, match="160-character"):
+        build_site(
+            make_published_set(_recommendations()),
+            tmp_path / "site",
+            public_output=True,
+            passphrase=None,
+            candidate_pool_status=(True, "x" * 161, None),
+        )
+
+
 def test_publishable_input_round_trip_rejects_internal_record_fields(tmp_path: Path) -> None:
     path = tmp_path / "recommendations.json"
     original = make_published_set(_recommendations())
@@ -87,12 +124,86 @@ def test_publishable_schema_v2_adapts_without_a_profile_snapshot(tmp_path: Path)
     payload = current.to_dict()
     payload["schema_version"] = 2
     payload.pop("profile_snapshot_at")
+    recommendations = payload["recommendations"]
+    assert isinstance(recommendations, tuple)
+    legacy_recommendations: list[dict[str, object]] = []
+    for recommendation in recommendations:
+        assert isinstance(recommendation, dict)
+        legacy = dict(recommendation)
+        legacy.pop("limitation")
+        legacy_recommendations.append(legacy)
+    payload["recommendations"] = legacy_recommendations
     path.write_text(json.dumps(payload), encoding="utf-8")
 
     loaded = read_published_set(path)
 
     assert loaded.schema_version == 2
     assert loaded.profile_snapshot_at is None
+
+
+def test_publishable_schema_v3_reader_defaults_the_new_limitation_field(tmp_path: Path) -> None:
+    path = tmp_path / "recommendations.json"
+    payload = make_published_set(_recommendations()).to_dict()
+    payload["schema_version"] = 3
+    recommendations = payload["recommendations"]
+    assert isinstance(recommendations, tuple)
+    legacy_recommendations: list[dict[str, object]] = []
+    for recommendation in recommendations:
+        assert isinstance(recommendation, dict)
+        legacy = dict(recommendation)
+        legacy.pop("limitation")
+        legacy_recommendations.append(legacy)
+    payload["recommendations"] = legacy_recommendations
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = read_published_set(path)
+
+    assert loaded.schema_version == 3
+    assert loaded.recommendations[0].limitation is None
+
+
+def test_publishable_schema_v4_round_trips_a_validated_limitation(tmp_path: Path) -> None:
+    base = _recommendations()
+    record = base.recommendations[0]
+    refined = RecommendationRecord(
+        record.candidate,
+        record.score,
+        record.source,
+        record.quality,
+        record.summary,
+        record.reason,
+        limitation="The abstract does not establish results beyond the described evaluation.",
+    )
+    path = tmp_path / "recommendations.json"
+    published = make_published_set(RecommendationSet(2, 9, base.generated_at, (refined,)))
+    write_published_set(published, path)
+
+    loaded = read_published_set(path)
+
+    assert loaded.schema_version == 4
+    assert loaded.recommendations[0].limitation == refined.limitation
+
+
+def test_publishable_schema_v4_keeps_quality_and_uncertainty_distinct(tmp_path: Path) -> None:
+    record = RecommendationRecord(
+        _recommendations().recommendations[0].candidate,
+        3,
+        "core",
+        0.8,
+        "Summary",
+        "Reason",
+        uncertainty=0.35,
+    )
+    path = tmp_path / "quality.json"
+    result = RecommendationSet(
+        2, 9, record.candidate.published, (record,), record.candidate.published
+    )
+    write_published_set(make_published_set(result), path)
+
+    loaded = read_published_set(path)
+
+    assert loaded.recommendations[0].quality == 0.8
+    assert loaded.recommendations[0].uncertainty == 0.35
 
 
 def test_schema_v2_uses_shanghai_date_and_self_contained_accessible_assets(
@@ -128,7 +239,7 @@ def test_schema_v2_uses_shanghai_date_and_self_contained_accessible_assets(
     build_site(published, output, public_output=True, passphrase=None)
 
     assert published.recommendations[0].published_on == "2026-08-02"
-    assert published.schema_version == 3
+    assert published.schema_version == 4
     assert published.profile_snapshot_at == "2026-08-01T12:00:00+00:00"
     css = (output / "assets/site.css").read_text(encoding="utf-8")
     js = (output / "assets/app.js").read_text(encoding="utf-8")
@@ -136,11 +247,14 @@ def test_schema_v2_uses_shanghai_date_and_self_contained_accessible_assets(
     assert "prefers-reduced-motion" in css
     assert "Asia/Shanghai" in js
     assert "Profile snapshot" in js
+    assert "Limitations" in js
     assert "Zotero library version" not in js
     assert "status-panel h2" in css
     assert "font-size:.78rem" in css
     assert "Not interested" in js
     assert "Save for later" in js
+    assert "normalizeData" in js
+    assert "item.quality??item.confidence" in js
     assert "zh-CN" not in js
     assert not any("\u4e00" <= character <= "\u9fff" for character in js)
     assert len(css.encode()) <= 8_192

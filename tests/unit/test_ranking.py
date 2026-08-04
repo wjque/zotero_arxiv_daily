@@ -11,6 +11,7 @@ from zotero_arxiv_daily.llm.contracts import parse_proposals
 from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity
 from zotero_arxiv_daily.ranking.models import RecommendationRecord
 from zotero_arxiv_daily.ranking.select import order_recommendations, pre_rank, select_diverse
+from zotero_arxiv_daily.ranking.weights import FeatureGroup, NormalizedFeature
 
 
 def _candidate(identifier: str, category: str, title: str, age: int = 1) -> ArxivCandidate:
@@ -199,3 +200,76 @@ def test_final_order_is_relevance_first_then_quality_and_stable_ties() -> None:
         "2401.00003",
         "2401.00001",
     ]
+
+
+def test_normalized_ranker_preserves_core_adjacent_and_exploration_sources() -> None:
+    profile = RemoteProfile(1, 1, ("learning",), ("cs.LG",), ("cs.AI",), ())
+    scored = pre_rank(
+        (
+            _candidate("2401.00001", "cs.LG", "Core learning"),
+            _candidate("2401.00002", "cs.AI", "Adjacent learning"),
+            _candidate("2401.00003", "math.OC", "Exploration learning"),
+        ),
+        profile,
+        datetime(2026, 8, 1, tzinfo=UTC),
+    )
+
+    assert {item.candidate.arxiv_id.canonical: item.source for item in scored} == {
+        "2401.00001": "core",
+        "2401.00002": "adjacent",
+        "2401.00003": "exploration",
+    }
+    assert "scientific_quality_value" not in dict(scored[0].components)
+
+
+def test_unknown_extra_evidence_is_excluded_instead_of_becoming_a_zero_score() -> None:
+    profile = RemoteProfile(1, 1, ("learning",), ("cs.LG",), (), ())
+    candidate = _candidate("2401.00001", "cs.LG", "Learning")
+
+    baseline = pre_rank((candidate,), profile, datetime(2026, 8, 1, tzinfo=UTC))[0]
+    unknown = pre_rank(
+        (candidate,),
+        profile,
+        datetime(2026, 8, 1, tzinfo=UTC),
+        extra_features={
+            "2401.00001": (
+                NormalizedFeature(
+                    "judge_quality",
+                    0.0,
+                    False,
+                    0.0,
+                    "judge-v1",
+                    FeatureGroup.SCIENTIFIC_QUALITY,
+                ),
+            )
+        },
+    )[0]
+
+    assert unknown.score == baseline.score
+
+
+def test_facet_matching_normalizes_hyphenated_and_spaced_labels() -> None:
+    from zotero_arxiv_daily.profile.models import PreferenceFacet
+
+    profile = RemoteProfile(
+        4,
+        1,
+        ("learning",),
+        ("cs.LG",),
+        (),
+        (),
+        preference_facets=(
+            PreferenceFacet("method", "reinforcement-learning", 1.0, 1.0, ("test",)),
+        ),
+    )
+    candidate = _candidate("2401.00001", "cs.LG", "Reinforcement learning methods")
+
+    scored = pre_rank((candidate,), profile, datetime(2026, 8, 1, tzinfo=UTC))[0]
+
+    assert dict(scored.components)["facet"] > 0
+
+    hyphenated_candidate = replace(candidate, title="Reinforcement-learning methods")
+    hyphenated_score = pre_rank((hyphenated_candidate,), profile, datetime(2026, 8, 1, tzinfo=UTC))[
+        0
+    ]
+    assert dict(hyphenated_score.components)["facet"] > 0

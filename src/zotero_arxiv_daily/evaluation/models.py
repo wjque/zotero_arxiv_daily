@@ -149,6 +149,12 @@ class RankedPaper:
     source: str | None = None
     category: str | None = None
     facets: tuple[str, ...] = ()
+    identifiers: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        values = (self.paper_id, *self.identifiers)
+        if any(not value.strip() for value in values) or len(set(values)) != len(values):
+            raise ValueError("ranked paper identifiers must be non-empty and unique")
 
 
 @dataclass(frozen=True, slots=True)
@@ -169,6 +175,7 @@ class RankingMetrics:
     pairwise_accuracy: float | None
     provisional: bool
     insufficiency_reason: str | None
+    candidate_overlap: int = 0
 
 
 @dataclass(frozen=True, slots=True)
@@ -185,3 +192,4 @@ class ComparisonReport:
     negative_rate_delta: float | None
     eligible_for_tuning: bool
     reasons: tuple[str, ...]
+    warnings: tuple[str, ...] = ()
