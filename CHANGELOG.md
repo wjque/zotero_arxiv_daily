@@ -10,18 +10,21 @@
   overlap reporting, and feature-group ablations without exposing private labels.
 - Added append-only feedback v2 with impression-aware outcome attribution, guarded weekly aggregate
   activation, and exact v1 compatibility.
-- Added provider-neutral `judge-v1` and `explain-v1` refinement with complete-record adaptive
-  batching, separate caches, bounded retries, and final-candidate-only prose generation.
+- Added provider-neutral `judge-v2` and `explain-v2` refinement with complete-record adaptive
+  batching, evidence-bound quality anchors, uncertainty, separate caches, bounded retries, and
+  final-candidate-only prose generation.
 - Added publishable schema v4 quality, uncertainty, preference-signal, and limitation fields with
   exact v1-v3 readers and encrypted desktop/mobile browser execution tests.
 - Added provider-reported token, latency, and cost fields to private run manifests, bounded
-  manifest-history retention, and a privacy-safe median efficiency comparison with a 25% output-token
-  reduction gate.
+  manifest-history retention, and an aggregate-only efficiency observation path. The quality-first
+  canary does not require an efficiency comparison.
 
 ### Changed
 
 - Expanded protected profile schema v4 with weighted long-term/recent interests and bounded
   domain, method, and task facets derived locally from the complete Zotero library.
+- Removed URL/domain fragments and reserved feedback-label tags from local interest extraction, with
+  an extractor-version bump that invalidates stale digests before profile export.
 - Hardened arXiv retries, response limits, candidate-pool degradation, workflow state restoration,
   and post-deployment state reconciliation while preserving the previous usable site on failure.
 - Added optional exact-identity public evidence adapters and kept missing or inapplicable evidence
