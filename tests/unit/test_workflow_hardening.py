@@ -38,6 +38,7 @@ def test_daily_workflow_guards_model_cost_and_promotes_history_after_deployment(
     assert "evaluate record-manifest" in workflow
     assert "Capture or compare privacy-safe efficiency evidence" in workflow
     assert "Privacy-safe efficiency comparison" in workflow
+    assert "quality is the active canary criterion" in workflow
     assert "Simulating the post-deploy state-push failure" in workflow
 
 

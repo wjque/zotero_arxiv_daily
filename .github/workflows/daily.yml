@@ -322,6 +322,7 @@ jobs:
           fi
           python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import json
+          import os
           from pathlib import Path
 
           manifest = json.loads(Path("runtime/run-manifest.json").read_text(encoding="utf-8"))
@@ -343,11 +344,14 @@ jobs:
           print(json.dumps({field: manifest.get(field) for field in fields}, sort_keys=True))
           print("```")
           report = Path("runtime/efficiency-report.json")
-          if report.exists():
+          compare_requested = os.environ.get("COMPARE_EFFICIENCY_CANDIDATE") == "true"
+          if report.exists() and compare_requested:
               print("## Privacy-safe efficiency comparison")
               print("```json")
               print(report.read_text(encoding="utf-8"))
               print("```")
+          else:
+              print("LLM efficiency comparison skipped; quality is the active canary criterion.")
           PY
       - name: Prepare generated state for deployment
         if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
