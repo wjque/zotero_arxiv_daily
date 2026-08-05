@@ -320,7 +320,7 @@ jobs:
               --candidate runtime/run-manifest.json \
               --output runtime/efficiency-report.json
           fi
-          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          python - <<'PY' | tee -a "$GITHUB_STEP_SUMMARY"
           import json
           from pathlib import Path
 
