@@ -13,7 +13,7 @@ on:
       enable_llm_refinement:
         description: Use the v0.2 judge/explain candidate path for this manual canary
         required: false
-        default: false
+        default: true
         type: boolean
       approve_llm_preference_context:
         description: Send the audited categorical preference context during this manual canary
@@ -286,7 +286,7 @@ jobs:
           PAGES_PASSPHRASE: ${{ secrets.PAGES_PASSPHRASE }}
           REMOTE_PROFILE: ${{ secrets.ZOTERO_ARXIV_DAILY_PROFILE }}
           ZAD_GITHUB_REPOSITORY: ${{ github.repository }}
-          ZAD_LLM_REFINEMENT_ENABLED: ${{ inputs.enable_llm_refinement && 'true' || 'false' }}
+          ZAD_LLM_REFINEMENT_ENABLED: ${{ (github.event_name == 'schedule' || inputs.enable_llm_refinement) && 'true' || 'false' }}
           ZAD_LLM_PREFERENCE_CONTEXT_APPROVED: ${{ inputs.approve_llm_preference_context && 'true' || 'false' }}
         run: |
           mkdir -p runtime

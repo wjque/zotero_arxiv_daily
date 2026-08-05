@@ -11,6 +11,20 @@ from typing import Any
 from zotero_arxiv_daily.core.errors import ExternalServiceError
 from zotero_arxiv_daily.zotero.models import ZoteroCollection, ZoteroItem
 
+_ARXIV_URL = re.compile(
+    r"https?://(?:www\.)?arxiv\.org/(?:abs|pdf)/(?P<identifier>[^?#\s]+)",
+    re.IGNORECASE,
+)
+_ARXIV_MARKER = re.compile(r"\barxiv\s*:\s*(?P<identifier>[^\s,;\)\]}]+)", re.IGNORECASE)
+_ARXIV_DOI = re.compile(
+    r"\b10\.48550/arxiv\.(?P<identifier>\d{4}\.\d{4,5}(?:v\d+)?)\b",
+    re.IGNORECASE,
+)
+_ARXIV_ID = re.compile(
+    r"^(?P<identifier>(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z]{2})?/\d{7})(?:v\d+)?)$",
+    re.IGNORECASE,
+)
+
 
 class _TextExtractor(HTMLParser):
     def __init__(self) -> None:
@@ -61,11 +75,7 @@ def normalize_item(raw: object) -> ZoteroItem:
         for tag in _sequence(data.get("tags", []), "tags")
         if normalize_text(_mapping(tag, "tag").get("tag"))
     )
-    identifiers = tuple(
-        value
-        for value in (normalize_text(data.get("DOI")), normalize_text(data.get("ISBN")))
-        if value
-    )
+    identifiers = _identifiers(data)
     creators = tuple(
         name
         for creator in _sequence(data.get("creators", []), "creators")
@@ -146,3 +156,35 @@ def _creator_name(creator: dict[str, Any]) -> str:
         )
         if part
     )
+
+
+def _identifiers(data: dict[str, Any]) -> tuple[str, ...]:
+    values = [
+        value
+        for value in (normalize_text(data.get("DOI")), normalize_text(data.get("ISBN")))
+        if value
+    ]
+    for source in (data.get("url"), data.get("extra")):
+        values.extend(_arxiv_identifiers(normalize_text(source)))
+    return tuple(dict.fromkeys(values))
+
+
+def _arxiv_identifiers(value: str) -> tuple[str, ...]:
+    if not value:
+        return ()
+    identifiers: list[str] = []
+    for pattern in (_ARXIV_URL, _ARXIV_MARKER, _ARXIV_DOI):
+        for match in pattern.finditer(value):
+            identifier = _canonical_arxiv_identifier(match.group("identifier"))
+            if identifier is not None:
+                identifiers.append(f"arxiv:{identifier}")
+    return tuple(dict.fromkeys(identifiers))
+
+
+def _canonical_arxiv_identifier(value: str) -> str | None:
+    candidate = value.strip().rstrip(".,;:)]}").casefold()
+    candidate = candidate.removesuffix(".pdf")
+    match = _ARXIV_ID.fullmatch(candidate)
+    if match is None:
+        return None
+    return re.sub(r"v\d+$", "", match.group("identifier"))

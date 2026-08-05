@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 
@@ -29,6 +30,20 @@ def _candidate(identifier: str, category: str, title: str, age: int = 1) -> Arxi
     )
 
 
+def _proposal_payload(
+    identifier: object = "2401.00001", *, extra: dict[str, object] | None = None
+) -> str:
+    item: dict[str, object] = {
+        "arxiv_id": identifier,
+        "quality": 1,
+        "summary": "A summary grounded in the supplied abstract.",
+        "reason": "A concrete contribution connects to the profile topic.",
+    }
+    if extra:
+        item.update(extra)
+    return json.dumps([item])
+
+
 def test_local_ranking_is_inspectable_and_allows_fewer_than_target() -> None:
     profile = RemoteProfile(1, 1, ("learning",), ("cs.LG",), (), ("learning",))
     scored = pre_rank(
@@ -42,21 +57,21 @@ def test_local_ranking_is_inspectable_and_allows_fewer_than_target() -> None:
 def test_model_output_cannot_introduce_unknown_fields_or_ids() -> None:
     with pytest.raises(ExternalServiceError, match="unsupported"):
         parse_proposals(
-            '[{"arxiv_id":"2401.00001","quality":1,"summary":"x","reason":"x","url":"bad"}]',
+            _proposal_payload(extra={"url": "bad"}),
             frozenset({"2401.00001"}),
         )
 
 
 def test_model_output_normalizes_an_allowed_arxiv_identifier() -> None:
     proposals = parse_proposals(
-        '[{"arxiv_id":"arXiv:2401.00001v2","quality":1,"summary":"x","reason":"x"}]',
+        _proposal_payload("arXiv:2401.00001v2"),
         frozenset({"2401.00001"}),
     )
 
     assert proposals[0].arxiv_id == "2401.00001"
     with pytest.raises(ExternalServiceError, match="was not requested"):
         parse_proposals(
-            '[{"arxiv_id":"9999.99999","quality":1,"summary":"x","reason":"x"}]',
+            _proposal_payload("9999.99999"),
             frozenset({"2401.00001"}),
         )
 
@@ -64,21 +79,30 @@ def test_model_output_normalizes_an_allowed_arxiv_identifier() -> None:
 def test_model_output_reports_safe_identifier_failure_categories() -> None:
     with pytest.raises(ExternalServiceError, match="must be a string"):
         parse_proposals(
-            '[{"arxiv_id":2401,"quality":1,"summary":"x","reason":"x"}]',
+            _proposal_payload(2401),
             frozenset({"2401.00001"}),
         )
 
 
 def test_model_output_field_order_does_not_change_validation() -> None:
     proposals = parse_proposals(
-        '[{"reason":"x","summary":"x","quality":0.8,"arxiv_id":"2401.00001"}]',
+        json.dumps(
+            {
+                "reason": "A concrete contribution connects to the profile topic.",
+                "summary": "A summary grounded in the supplied abstract.",
+                "quality": 0.8,
+                "arxiv_id": "2401.00001",
+            }
+        )
+        .replace("{", "[{", 1)
+        .replace("}", "}]", 1),
         frozenset({"2401.00001"}),
     )
 
     assert proposals[0].quality == 0.8
     with pytest.raises(ExternalServiceError, match="malformed"):
         parse_proposals(
-            '[{"arxiv_id":"not-an-id","quality":1,"summary":"x","reason":"x"}]',
+            _proposal_payload("not-an-id"),
             frozenset({"2401.00001"}),
         )
 
@@ -238,7 +262,7 @@ def test_unknown_extra_evidence_is_excluded_instead_of_becoming_a_zero_score() -
                     0.0,
                     False,
                     0.0,
-                    "judge-v1",
+                    "judge-v2",
                     FeatureGroup.SCIENTIFIC_QUALITY,
                 ),
             )

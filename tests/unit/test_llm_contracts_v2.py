@@ -48,10 +48,11 @@ def test_judge_rejects_unsupplied_evidence_references() -> None:
 def test_explain_contract_rejects_generic_reasons_and_requires_limits() -> None:
     with pytest.raises(ExternalServiceError, match="generic"):
         parse_explanations(
-            '{"explanations":[{"arxiv_id":"2401.00001","summary":"A concise summary.",'
+            '{"explanations":[{"arxiv_id":"2401.00001",'
+            '"summary":"A concise summary of the supplied paper.",'
             '"reason":"This paper is relevant to your interests.",'
-            '"limitation":"Abstract-only assessment.",'
-            '"evidence_fields":["summary"]}]}',
+            '"limitation":"The abstract-only record cannot verify deployment performance.",'
+            '"evidence_fields":["title","summary"]}]}',
             _IDS,
             _FIELDS,
         )

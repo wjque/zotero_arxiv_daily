@@ -53,7 +53,7 @@ def _judgments(identifiers: tuple[str, ...]) -> str:
                     "arxiv_id": identifier,
                     "dimensions": _DIMENSIONS,
                     "uncertainty": 0.2,
-                    "evidence_fields": ["summary"],
+                    "evidence_fields": ["title", "summary"],
                 }
                 for identifier in identifiers
             ]
@@ -105,7 +105,7 @@ def test_explanation_runner_uses_a_distinct_contract_and_cache_namespace(tmp_pat
                                 "weekly update policy."
                             ),
                             "limitation": "The abstract does not verify deployment performance.",
-                            "evidence_fields": ["summary"],
+                            "evidence_fields": ["title", "summary"],
                         }
                     ]
                 }
@@ -122,5 +122,5 @@ def test_explanation_runner_uses_a_distinct_contract_and_cache_namespace(tmp_pat
     )
 
     assert values[0].arxiv_id == "2401.00001"
-    assert provider.calls[0][0] == "explain-v1"
+    assert provider.calls[0][0] == "explain-v2"
     assert usage.estimated_output_tokens > 0

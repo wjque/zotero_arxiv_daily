@@ -25,6 +25,9 @@ from zotero_arxiv_daily.evaluation.models import (
 _REASON_TAG_PREFIX = "ranking-reason:"
 _PAPER_ID_TAG_PREFIX = "ranking-paper-id:"
 _DOI = re.compile(r"^10\.\d{4,9}/[-._;()/:a-z0-9]+$", re.IGNORECASE)
+_ARXIV_DOI = re.compile(
+    r"^10\.48550/arxiv\.(?P<identifier>\d{4}\.\d{4,5}(?:v\d+)?)$", re.IGNORECASE
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -357,16 +360,32 @@ def _canonical_paper_id(identifiers: tuple[str, ...], tags: tuple[str, ...]) -> 
     for tag in tags:
         if tag.casefold().startswith(_PAPER_ID_TAG_PREFIX):
             value = tag[len(_PAPER_ID_TAG_PREFIX) :].strip().casefold()
-            if value.startswith(("arxiv:", "doi:")):
-                return value
+            canonical = _canonical_identifier(value)
+            if canonical is not None:
+                return canonical
     for identifier in identifiers:
         normalized = identifier.strip().casefold()
-        if normalized.startswith("arxiv:") and len(normalized) > 6:
-            return normalized
-        if normalized.startswith("doi:") and len(normalized) > 4:
-            return normalized
-        if _DOI.fullmatch(normalized):
-            return f"doi:{normalized}"
+        canonical = _canonical_identifier(normalized)
+        if canonical is not None:
+            return canonical
+    return None
+
+
+def _canonical_identifier(value: str) -> str | None:
+    normalized = value.strip().casefold()
+    if normalized.startswith("arxiv:") and len(normalized) > 6:
+        return "arxiv:" + re.sub(r"v\d+$", "", normalized[6:])
+    doi = normalized.removeprefix("doi:")
+    arxiv_doi = _ARXIV_DOI.fullmatch(doi)
+    if arxiv_doi is not None:
+        return "arxiv:" + re.sub(r"v\d+$", "", arxiv_doi.group("identifier"))
+    if normalized.startswith("doi:") and len(normalized) > 4:
+        return normalized
+    if _DOI.fullmatch(normalized):
+        arxiv_doi = _ARXIV_DOI.fullmatch(normalized)
+        if arxiv_doi is not None:
+            return "arxiv:" + re.sub(r"v\d+$", "", arxiv_doi.group("identifier"))
+        return f"doi:{normalized}"
     return None
 
 

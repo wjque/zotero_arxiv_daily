@@ -65,7 +65,7 @@ class _Provider:
                         "arxiv_id": candidate["arxiv_id"],
                         "quality": 0.9,
                         "summary": "A concise Chinese summary.",
-                        "reason": "Matches the profile topic.",
+                        "reason": "Its concrete learning contribution matches the profile topic.",
                     }
                     for candidate in candidates
                 ]
@@ -84,7 +84,7 @@ class _RefinementProvider:
 
     def complete(self, contract: str, records: list[dict[str, object]]) -> str:
         self.calls.append((contract, records))
-        if contract == "judge-v1":
+        if contract == "judge-v2":
             judgments = []
             for record in records:
                 score = 0.0 if record["arxiv_id"] == "2401.00004" else 0.8
@@ -101,7 +101,7 @@ class _RefinementProvider:
                             "reproducibility": None,
                         },
                         "uncertainty": 0.2,
-                        "evidence_fields": ["summary"],
+                        "evidence_fields": ["title", "summary"],
                     }
                 )
             return json.dumps({"judgments": judgments})
@@ -117,7 +117,7 @@ class _RefinementProvider:
                             "Its bounded learning method addresses the stated ranking constraint."
                         ),
                         "limitation": "The abstract alone does not verify deployment performance.",
-                        "evidence_fields": ["summary"],
+                        "evidence_fields": ["title", "summary"],
                     }
                     for record in records
                 ]
@@ -290,7 +290,7 @@ def test_refined_run_judges_shortlist_and_generates_final_only_explanations(tmp_
     )
 
     assert len(result.recommendations) == 3
-    assert [contract for contract, _ in provider.calls] == ["judge-v1", "explain-v1"]
+    assert [contract for contract, _ in provider.calls] == ["judge-v2", "explain-v2"]
     assert len(provider.calls[0][1]) == 4
     assert len(provider.calls[1][1]) == 3
     assert all("relevance_signals" not in record for record in provider.calls[1][1])
@@ -314,9 +314,9 @@ def test_refined_run_judges_shortlist_and_generates_final_only_explanations(tmp_
     )
 
     assert [contract for contract, _ in provider.calls] == [
-        "judge-v1",
-        "explain-v1",
-        "explain-v1",
+        "judge-v2",
+        "explain-v2",
+        "explain-v2",
     ]
     assert all("relevance_signals" in record for record in provider.calls[-1][1])
 

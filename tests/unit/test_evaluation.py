@@ -118,6 +118,19 @@ def test_zotero_import_accepts_normalized_doi_and_explicit_arxiv_identity_tag(
     ]
 
 
+def test_zotero_import_maps_arxiv_doi_to_exact_arxiv_identity(tmp_path: Path) -> None:
+    store = CorpusStore(tmp_path / "corpus.json")
+    mapping = CuratedCorpusMapping(("POSITIVE",), ("NEGATIVE",))
+
+    store.import_zotero(
+        (ZoteroCorpusItem("ARXIV-DOI", ("10.48550/arxiv.2401.00001v2",), ("POSITIVE",), ()),),
+        mapping,
+        _NOW,
+    )
+
+    assert store.snapshot(_NOW).labels[0].paper_id == "arxiv:2401.00001"
+
+
 def test_corpus_rejects_invalid_correction_lineage(tmp_path: Path) -> None:
     store = CorpusStore(tmp_path / "corpus.json")
 
@@ -297,3 +310,17 @@ def test_metrics_match_an_exact_doi_alias_without_fuzzy_identity(tmp_path: Path)
     assert metrics.candidate_overlap == 1
     assert metrics.recall_at_k == 1.0
     assert metrics.precision_at_k == 1.0
+
+
+def test_metrics_match_arxiv_doi_alias_to_arxiv_candidate_exactly(tmp_path: Path) -> None:
+    store = CorpusStore(tmp_path / "corpus.json")
+    store.append((_event("positive", "doi:10.48550/arxiv.2401.00001", CorpusLabel.POSITIVE),))
+
+    metrics = evaluate_ranking(
+        (RankedPaper("arxiv:2401.00001", 0.9),),
+        store.snapshot(_NOW),
+        ("doi:10.48550/arxiv.2401.00001",),
+    )
+
+    assert metrics.candidate_overlap == 1
+    assert metrics.recall_at_k == 1.0

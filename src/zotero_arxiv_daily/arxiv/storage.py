@@ -88,9 +88,16 @@ class ArxivStateStore:
         self._write(payload)
 
     def commit(
-        self, checkpoint: RetrievalCheckpoint, candidates: tuple[ArxivCandidate, ...]
+        self,
+        checkpoint: RetrievalCheckpoint,
+        candidates: tuple[ArxivCandidate, ...],
+        *,
+        retention_days: int | None = CANDIDATE_POOL_RETENTION_DAYS,
     ) -> None:
         """Merge a bounded candidate pool only after all requested pages parsed successfully."""
+
+        if retention_days is not None and retention_days < 0:
+            raise ValueError("retention_days must be non-negative or None")
 
         previous = self._read()
         previous_seen = previous.get("seen_ids", [])
@@ -99,7 +106,7 @@ class ArxivStateStore:
         )
         seen.update(candidate.arxiv_id.canonical for candidate in candidates)
         existing = self.candidates()
-        pool = _merge_candidate_pool(existing, candidates, checkpoint.completed_at)
+        pool = _merge_candidate_pool(existing, candidates, checkpoint.completed_at, retention_days)
         payload = {
             "schema_version": CANDIDATE_POOL_SCHEMA_VERSION,
             "checkpoint": checkpoint.completed_at.isoformat(),
@@ -177,11 +184,16 @@ def _merge_candidate_pool(
     existing: tuple[ArxivCandidate, ...],
     incoming: tuple[ArxivCandidate, ...],
     completed_at: datetime,
+    retention_days: int | None = CANDIDATE_POOL_RETENTION_DAYS,
 ) -> tuple[ArxivCandidate, ...]:
-    cutoff = completed_at.astimezone(UTC) - timedelta(days=CANDIDATE_POOL_RETENTION_DAYS)
+    cutoff = (
+        completed_at.astimezone(UTC) - timedelta(days=retention_days)
+        if retention_days is not None
+        else None
+    )
     by_id: dict[str, ArxivCandidate] = {}
     for candidate in existing + incoming:
-        if candidate.updated < cutoff:
+        if cutoff is not None and candidate.updated < cutoff:
             continue
         previous = by_id.get(candidate.arxiv_id.canonical)
         if previous is None or candidate.updated > previous.updated:

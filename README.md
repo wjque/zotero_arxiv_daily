@@ -211,16 +211,32 @@ uv run zotero-arxiv-daily ranking activate-weights \
   --version coarse-v2 --shadow-report runtime/shadow-report.json
 ```
 
-`ZAD_LLM_REFINEMENT_ENABLED` remains `false` by default. When enabled after an approved release
-decision, the pipeline judges only the coarse shortlist with `judge-v1`, applies local selection,
-and asks `explain-v1` for only the final papers. `ZAD_LLM_PREFERENCE_CONTEXT_APPROVED` is a separate
-opt-in for fixed categorical relevance signals such as `topic_overlap`; it never sends terms, notes,
-annotations, collection names, labels, or feedback prose. Do not set it without documenting the
-field-level trust-boundary approval. Batch size, request token/byte limits, retry count, request
-count, and provider output tokens are bounded by the `ZAD_LLM_*` settings in `.env.example`.
+`ZAD_LLM_REFINEMENT_ENABLED` is enabled in the production workflow and `.env.example` so quality
+assessment is the default path. The pipeline judges only the coarse shortlist with `judge-v2`,
+applies local selection, and asks `explain-v2` for only the final papers. The judge uses fixed score
+anchors and uncertainty; explanations must name the problem, approach, claimed result, a concrete
+paper-specific contribution, and a limitation grounded in at least two supplied fields. Existing
+`judge-v1`/`explain-v1` cache entries are intentionally ignored. `ZAD_LLM_PREFERENCE_CONTEXT_APPROVED`
+is a separate opt-in for fixed categorical relevance signals such as `topic_overlap`; it never
+sends terms, notes, annotations, collection names, labels, or feedback prose. Do not set it without
+documenting the field-level trust-boundary approval. Batch size, request token/byte limits, retry
+count, request count, and provider output tokens are bounded by the `ZAD_LLM_*` settings in
+`.env.example`.
 
-The provider must return measured usage metadata before an efficiency gate can pass. Record the
-privacy-safe manifest after each run, then compare equal-model baseline and candidate histories:
+The explicit non-refinement fallback uses `proposal-v2` with the same factual grounding rules and a
+new cache namespace; the frozen v0.1.2 baseline remains available only for comparison.
+
+To make a real held-out overlap measurable, hydrate an evaluation-only candidate state from exact
+identities in a frozen snapshot. This never adds labeled papers to production retrieval:
+
+```bash
+uv run zotero-arxiv-daily evaluate hydrate-candidates \
+  --snapshot-id SNAPSHOT_ID \
+  --candidate-state runtime/evaluation-candidates.json
+```
+
+Provider usage metadata is useful for an efficiency observation but is not a quality gate. Record
+the privacy-safe manifest after each run, then compare equal-model baseline and candidate histories:
 
 ```bash
 uv run zotero-arxiv-daily evaluate record-manifest
@@ -231,8 +247,8 @@ uv run zotero-arxiv-daily evaluate efficiency \
 ```
 
 The comparison uses median input/output tokens per deployed recommendation, requests, cache hits,
-provider latency, duration, and measured cost. Missing actual token usage blocks comparability; the
-release target is at least a 25% median output-token reduction.
+provider latency, duration, and measured cost. It is an observational report while quality is being
+improved; a missing usage value or a higher token count does not block a quality canary or deployment.
 
 Manual production acceptance can capture one private manifest as the efficiency baseline and compare
 a later candidate run without exporting protected state. The workflow summary exposes only the

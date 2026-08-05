@@ -28,6 +28,27 @@ def test_normalize_item_keeps_manual_and_automatic_tags_distinct() -> None:
     assert item.is_seed is True
 
 
+def test_normalize_item_extracts_exact_arxiv_identity_from_url_and_extra() -> None:
+    item = normalize_item(
+        {
+            "key": "ARXIV001",
+            "version": 1,
+            "data": {
+                "itemType": "journalArticle",
+                "title": "A paper",
+                "url": "https://arxiv.org/pdf/2401.00001v2.pdf",
+                "extra": "arXiv:2402.00002v1; DOI 10.48550/arxiv.2403.00003",
+            },
+        }
+    )
+
+    assert item.identifiers == (
+        "arxiv:2401.00001",
+        "arxiv:2402.00002",
+        "arxiv:2403.00003",
+    )
+
+
 def test_normalize_note_and_annotation_are_not_recommendation_seeds() -> None:
     note = normalize_item(
         {

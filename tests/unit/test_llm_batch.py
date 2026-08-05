@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from zotero_arxiv_daily.core.errors import ExternalServiceError
@@ -15,6 +17,21 @@ class Provider:
         return self.responses.pop(0)
 
 
+def _proposal_response(identifier: str = "2401.00001") -> str:
+    return json.dumps(
+        {
+            "proposals": [
+                {
+                    "arxiv_id": identifier,
+                    "quality": 1,
+                    "summary": "A summary grounded in the supplied abstract.",
+                    "reason": "A concrete contribution connects to the profile topic.",
+                }
+            ]
+        }
+    )
+
+
 def test_partial_invalid_batch_fails_without_returning_partial_proposals() -> None:
     candidates: list[dict[str, object]] = [
         {"arxiv_id": "2401.00001"},
@@ -22,7 +39,7 @@ def test_partial_invalid_batch_fails_without_returning_partial_proposals() -> No
     ]
     provider = Provider(
         [
-            '{"proposals":[{"arxiv_id":"2401.00001","quality":1,"summary":"s","reason":"r"}]}',
+            _proposal_response(),
             "not-json",
         ]
     )
@@ -40,9 +57,7 @@ def test_transient_provider_failure_retries_once_within_a_bounded_budget() -> No
             self.calls += 1
             if self.calls == 1:
                 raise ExternalServiceError("temporary outage")
-            return (
-                '{"proposals":[{"arxiv_id":"2401.00001","quality":1,"summary":"s","reason":"r"}]}'
-            )
+            return _proposal_response()
 
     _, usage = propose_bounded(RetryingProvider(), [{"arxiv_id": "2401.00001"}], retries=1)
 
@@ -53,7 +68,7 @@ def test_provider_usage_is_aggregated_when_available() -> None:
     class UsageProvider:
         def propose(self, candidates: list[dict[str, object]]) -> ProviderCompletion:
             return ProviderCompletion(
-                '{"proposals":[{"arxiv_id":"2401.00001","quality":1,"summary":"s","reason":"r"}]}',
+                _proposal_response(),
                 input_tokens=12,
                 output_tokens=7,
                 latency_seconds=0.25,
@@ -70,7 +85,7 @@ def test_invalid_structured_response_retries_once() -> None:
     provider = Provider(
         [
             "not-json",
-            '{"proposals":[{"arxiv_id":"2401.00001","quality":1,"summary":"s","reason":"r"}]}',
+            _proposal_response(),
         ]
     )
 

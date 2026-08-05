@@ -12,6 +12,7 @@ from pathlib import Path
 from zotero_arxiv_daily import __version__
 from zotero_arxiv_daily.arxiv.categories import expand_one_hop
 from zotero_arxiv_daily.arxiv.client import ArxivClient
+from zotero_arxiv_daily.arxiv.models import RetrievalCheckpoint
 from zotero_arxiv_daily.arxiv.retrieval import retrieve
 from zotero_arxiv_daily.arxiv.storage import ArxivStateStore
 from zotero_arxiv_daily.core.config import load_config
@@ -19,6 +20,7 @@ from zotero_arxiv_daily.core.errors import ApplicationError
 from zotero_arxiv_daily.core.time import generation_decision
 from zotero_arxiv_daily.doctor import Diagnostic, doctor_exit_code, run_doctor
 from zotero_arxiv_daily.evaluation.calibration import run_shadow_evaluation, write_shadow_report
+from zotero_arxiv_daily.evaluation.candidates import hydrate_labeled_candidates
 from zotero_arxiv_daily.evaluation.corpus import (
     CorpusStore,
     CuratedCorpusMapping,
@@ -198,6 +200,16 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_shadow_parser.add_argument(
         "--output", type=Path, default=Path("runtime/shadow-report.json")
     )
+    evaluate_hydrate_parser = evaluate_commands.add_parser(
+        "hydrate-candidates",
+        help="Fetch exact public arXiv identities from a frozen evaluation snapshot",
+    )
+    evaluate_hydrate_parser.add_argument("--snapshot-id", required=True)
+    evaluate_hydrate_parser.add_argument(
+        "--snapshots", type=Path, default=Path("runtime/evaluation-snapshots")
+    )
+    evaluate_hydrate_parser.add_argument("--candidate-state", type=Path, required=True)
+    evaluate_hydrate_parser.add_argument("--batch-size", type=int, default=20)
     evaluate_record_manifest_parser = evaluate_commands.add_parser(
         "record-manifest", help="Append one privacy-safe run manifest to local history"
     )
@@ -467,8 +479,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "evaluate" and args.evaluate_command == "efficiency":
             comparison = compare_manifest_files(args.baseline, args.candidate, args.output)
-            state = "eligible" if comparison.comparable else "blocked"
-            print(f"efficiency comparison written: {state}")
+            state = "measured" if comparison.comparable else "observation-only"
+            print(f"efficiency observation written: {state}")
             return 0
         if args.command == "evaluate" and args.evaluate_command == "snapshot":
             created_at = datetime.now(UTC)
@@ -508,6 +520,26 @@ def main(argv: Sequence[str] | None = None) -> int:
                 else "provisional-or-blocked"
             )
             print(f"shadow evaluation written: {gate_state}, {len(report.reasons)} gate reason(s)")
+            return 0
+        if args.command == "evaluate" and args.evaluate_command == "hydrate-candidates":
+            snapshot = EvaluationSnapshotStore(args.snapshots).read(args.snapshot_id)
+            hydrated = hydrate_labeled_candidates(
+                ArxivClient(),
+                tuple(paper_id for paper_id, _ in snapshot.labels),
+                batch_size=args.batch_size,
+            )
+            if hydrated.candidates:
+                ArxivStateStore(args.candidate_state).commit(
+                    RetrievalCheckpoint(datetime.now(UTC)),
+                    hydrated.candidates,
+                    retention_days=None,
+                )
+            print(
+                "evaluation candidates hydrated: "
+                f"{len(hydrated.candidates)} exact matches, "
+                f"{len(hydrated.unresolved_ids)} unresolved, "
+                f"{hydrated.request_count} public requests"
+            )
             return 0
         if args.command == "ranking" and args.ranking_command == "weights":
             registry = WeightSetRegistry(args.state or Path(config.ranking_weight_state_path))
@@ -577,6 +609,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 timeout_seconds=config.deepseek_timeout_seconds,
                 output_language=config.output_language,
                 max_output_tokens=config.llm_max_output_tokens,
+                proposal_prompt_version="proposal-v2",
             )
             feedback_adjustments = feedback.adjustments()
             excluded_ids = history.excluded_ids(started_at, config.recommendation_suppression_days)
@@ -611,7 +644,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     started_at,
                     provider,
                     ProposalCache(args.cache),
-                    prompt_version=f"recommendation-v2:{config.output_language.casefold()}",
+                    prompt_version=f"recommendation-v3:proposal-v2:{config.output_language.casefold()}",
                     model="deepseek-v4-flash",
                     feedback_adjustments=feedback_adjustments,
                     pre_rank_limit=config.recommendation_candidate_limit,

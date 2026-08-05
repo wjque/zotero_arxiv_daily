@@ -15,8 +15,8 @@ def test_daily_workflow_guards_model_cost_and_promotes_history_after_deployment(
     assert "compare_efficiency_candidate" in workflow
     assert "simulate_post_deploy_state_push_failure" in workflow
     assert (
-        "ZAD_LLM_REFINEMENT_ENABLED: ${{ inputs.enable_llm_refinement && 'true' || 'false' }}"
-        in workflow
+        "ZAD_LLM_REFINEMENT_ENABLED: ${{ (github.event_name == 'schedule' || "
+        "inputs.enable_llm_refinement) && 'true' || 'false' }}" in workflow
     )
     assert (
         "ZAD_LLM_PREFERENCE_CONTEXT_APPROVED: "

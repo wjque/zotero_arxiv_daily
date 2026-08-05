@@ -1,4 +1,4 @@
-"""Provider-neutral, failure-atomic runners for judge-v1 and explain-v1 contracts."""
+"""Provider-neutral, failure-atomic runners for judge-v2 and explain-v2 contracts."""
 
 from __future__ import annotations
 
@@ -27,6 +27,10 @@ class StructuredProvider(Protocol):
     def complete(
         self, contract: str, records: list[dict[str, object]]
     ) -> str | ProviderCompletion: ...
+
+
+JUDGE_CONTRACT = "judge-v2"
+EXPLANATION_CONTRACT = "explain-v2"
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,7 +65,7 @@ def run_judgments(
         cache,
         records,
         cache_keys=cache_keys,
-        contract="judge-v1",
+        contract=JUDGE_CONTRACT,
         batch_size=batch_size,
         max_request_tokens=max_request_tokens,
         max_request_bytes=max_request_bytes,
@@ -93,7 +97,7 @@ def run_explanations(
         cache,
         records,
         cache_keys=cache_keys,
-        contract="explain-v1",
+        contract=EXPLANATION_CONTRACT,
         batch_size=batch_size,
         max_request_tokens=max_request_tokens,
         max_request_bytes=max_request_bytes,
@@ -216,7 +220,7 @@ def _parse[T](
 
 
 def _wrap(contract: str, value: str) -> str:
-    key = "judgments" if contract == "judge-v1" else "explanations"
+    key = "judgments" if contract == JUDGE_CONTRACT else "explanations"
     return json.dumps({key: [json.loads(value)]}, separators=(",", ":"))
 
 

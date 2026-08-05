@@ -26,7 +26,13 @@ from zotero_arxiv_daily.llm.contracts import (
     parse_proposals,
 )
 from zotero_arxiv_daily.llm.preference_context import validate_preference_signals
-from zotero_arxiv_daily.llm.refinement import StructuredProvider, run_explanations, run_judgments
+from zotero_arxiv_daily.llm.refinement import (
+    EXPLANATION_CONTRACT,
+    JUDGE_CONTRACT,
+    StructuredProvider,
+    run_explanations,
+    run_judgments,
+)
 from zotero_arxiv_daily.profile.models import RemoteProfile
 from zotero_arxiv_daily.ranking.models import (
     RECOMMENDATION_RUN_MANIFEST_SCHEMA_VERSION,
@@ -306,7 +312,7 @@ def run_refined_recommendation(
     max_requests: int = 4,
     retries: int = 1,
 ) -> tuple[RecommendationSet, RecommendationRunManifest]:
-    """Run judge-v1 then final-only explain-v1 without granting model control over selection."""
+    """Run judge-v2 then final-only explain-v2 without granting model control over selection."""
 
     if not 1 <= pre_rank_limit <= 80:
         raise ValueError("pre_rank_limit must be between 1 and 80")
@@ -348,7 +354,7 @@ def run_refined_recommendation(
         profile_digest,
         model,
         output_language,
-        "judge-v1",
+        JUDGE_CONTRACT,
     )
     judgments, judge_usage = run_judgments(
         provider,
@@ -427,9 +433,9 @@ def run_refined_recommendation(
         profile_digest,
         model,
         output_language,
-        "explain-v1:preference-context-v1"
+        f"{EXPLANATION_CONTRACT}:preference-context-v1"
         if allow_preference_context
-        else "explain-v1:public-only",
+        else f"{EXPLANATION_CONTRACT}:public-only",
     )
     explanation_fields = {
         "title",
@@ -598,7 +604,7 @@ def _assessment_features(assessment: JudgeAssessment) -> tuple[NormalizedFeature
             quality,
             bool(quality_values),
             confidence if quality_values else 0.0,
-            "judge-v1",
+            JUDGE_CONTRACT,
             FeatureGroup.SCIENTIFIC_QUALITY,
         ),
         NormalizedFeature(
@@ -606,7 +612,7 @@ def _assessment_features(assessment: JudgeAssessment) -> tuple[NormalizedFeature
             reproducibility if reproducibility is not None else 0.0,
             reproducibility is not None,
             confidence if reproducibility is not None else 0.0,
-            "judge-v1",
+            JUDGE_CONTRACT,
             FeatureGroup.REPRODUCIBILITY,
         ),
     )
@@ -687,7 +693,10 @@ def _quality_score(assessment: JudgeAssessment) -> float:
     for dimension, value in assessment.dimensions:
         if dimension in dimensions and value is not None:
             values.append(value)
-    return sum(values) / len(values) if values else 0.0
+    if not values:
+        return 0.0
+    confidence = 1.0 - assessment.uncertainty
+    return (sum(values) / len(values)) * confidence
 
 
 def _profile_digest(

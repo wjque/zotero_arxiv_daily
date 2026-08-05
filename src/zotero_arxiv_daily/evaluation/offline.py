@@ -6,12 +6,14 @@ import hashlib
 import json
 import math
 import os
+import re
 import tempfile
 from dataclasses import asdict
 from datetime import datetime, timedelta
 from pathlib import Path
 
-from zotero_arxiv_daily.core.errors import ApplicationError
+from zotero_arxiv_daily.arxiv.ids import parse_arxiv_id
+from zotero_arxiv_daily.core.errors import ApplicationError, ConfigurationError
 from zotero_arxiv_daily.core.time import require_aware_utc
 from zotero_arxiv_daily.evaluation.models import (
     CURATED_CORPUS_SCHEMA_VERSION,
@@ -24,6 +26,10 @@ from zotero_arxiv_daily.evaluation.models import (
     RankedPaper,
     RankingMetrics,
     ResolvedJudgment,
+)
+
+_ARXIV_DOI = re.compile(
+    r"^10\.48550/arxiv\.(?P<identifier>\d{4}\.\d{4,5}(?:v\d+)?)$", re.IGNORECASE
 )
 
 
@@ -216,11 +222,11 @@ def evaluate_ranking(
 
     if k < 1:
         raise ValueError("k must be positive")
-    selected_ids = frozenset(paper_ids)
+    selected_ids = frozenset(_canonical_identity(value) for value in paper_ids)
     labels = {
-        label.paper_id: label.label
+        _canonical_identity(label.paper_id): label.label
         for label in corpus.labels
-        if label.paper_id in selected_ids and label.label is not None
+        if _canonical_identity(label.paper_id) in selected_ids and label.label is not None
     }
     positives = {paper_id for paper_id, label in labels.items() if label is CorpusLabel.POSITIVE}
     negatives = {paper_id for paper_id, label in labels.items() if label is CorpusLabel.NEGATIVE}
@@ -445,37 +451,61 @@ def _pairwise_accuracy(
     scores: dict[str, float] = {}
     for item in ranked:
         for identifier in (item.paper_id, *item.identifiers):
-            if identifier in scores and scores[identifier] != item.score:
+            canonical = _canonical_identity(identifier)
+            if canonical in scores and scores[canonical] != item.score:
                 raise ValueError("ranked paper identifiers map to conflicting scores")
-            scores[identifier] = item.score
+            scores[canonical] = item.score
     outcomes: list[bool] = []
     for pair in corpus.pairwise:
         if (
-            pair.paper_id not in paper_ids
+            _canonical_identity(pair.paper_id) not in paper_ids
             or not pair.compared_paper_id
-            or pair.compared_paper_id not in paper_ids
+            or _canonical_identity(pair.compared_paper_id) not in paper_ids
         ):
             continue
-        if pair.paper_id in scores and pair.compared_paper_id in scores:
-            outcomes.append(scores[pair.paper_id] > scores[pair.compared_paper_id])
+        winner = _canonical_identity(pair.paper_id)
+        other = _canonical_identity(pair.compared_paper_id)
+        if winner in scores and other in scores:
+            outcomes.append(scores[winner] > scores[other])
     return sum(outcomes) / len(outcomes) if outcomes else None
 
 
 def _ranked_identifiers(ranked: tuple[RankedPaper, ...]) -> frozenset[str]:
     return frozenset(
-        identifier for item in ranked for identifier in (item.paper_id, *item.identifiers)
+        _canonical_identity(identifier)
+        for item in ranked
+        for identifier in (item.paper_id, *item.identifiers)
     )
 
 
 def _label_for(item: RankedPaper, labels: dict[str, CorpusLabel]) -> CorpusLabel | None:
     matched = {
-        labels[identifier]
+        labels[_canonical_identity(identifier)]
         for identifier in (item.paper_id, *item.identifiers)
-        if identifier in labels
+        if _canonical_identity(identifier) in labels
     }
     if len(matched) > 1:
         raise ValueError("ranked paper identifiers map to conflicting corpus labels")
     return next(iter(matched), None)
+
+
+def _canonical_identity(value: str) -> str:
+    """Normalize only exact arXiv/DOI aliases; never infer identity from content."""
+
+    normalized = value.strip().casefold()
+    if normalized.startswith("arxiv:"):
+        try:
+            return f"arxiv:{parse_arxiv_id(normalized[6:]).canonical}"
+        except ConfigurationError:
+            return normalized
+    doi = normalized.removeprefix("doi:")
+    match = _ARXIV_DOI.fullmatch(doi)
+    if match is not None:
+        try:
+            return f"arxiv:{parse_arxiv_id(match.group('identifier')).canonical}"
+        except ConfigurationError:
+            return normalized
+    return normalized
 
 
 def _insufficiency_reason(label_count: int, positive_count: int, pairwise_count: int) -> str | None:

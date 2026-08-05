@@ -98,10 +98,12 @@ def parse_proposals(payload: str, allowed_ids: frozenset[str]) -> tuple[ModelPro
         if (
             not isinstance(summary, str)
             or not isinstance(reason, str)
-            or len(summary) > 800
-            or len(reason) > 400
+            or not 24 <= len(summary) <= 800
+            or not 24 <= len(reason) <= 400
         ):
-            raise ExternalServiceError("model proposal text exceeds bounds")
+            raise ExternalServiceError("model proposal text is invalid")
+        if _generic_reason(reason):
+            raise ExternalServiceError("model proposal reason is generic")
         proposals.append(ModelProposal(canonical_id, float(quality), summary, reason))
     proposal_ids = frozenset(proposal.arxiv_id for proposal in proposals)
     if len(proposal_ids) != len(proposals):
@@ -116,7 +118,7 @@ def parse_judgments(
     allowed_ids: frozenset[str],
     allowed_evidence_fields: frozenset[str],
 ) -> tuple[JudgeAssessment, ...]:
-    """Validate judge-v1 output without allowing it to introduce facts or identifiers."""
+    """Validate judge-v2 output without allowing it to introduce facts or identifiers."""
 
     entries = _entries(payload, "judgments", allowed_ids)
     expected = {"arxiv_id", "dimensions", "uncertainty", "evidence_fields"}
@@ -135,7 +137,7 @@ def parse_judgments(
                 _allowed_id(entry["arxiv_id"], allowed_ids),
                 dimensions,
                 float(uncertainty),
-                _evidence_fields(entry["evidence_fields"], allowed_evidence_fields),
+                _evidence_fields(entry["evidence_fields"], allowed_evidence_fields, minimum=2),
             )
         )
     _complete_unique(results, allowed_ids)
@@ -147,7 +149,7 @@ def parse_explanations(
     allowed_ids: frozenset[str],
     allowed_evidence_fields: frozenset[str],
 ) -> tuple[Explanation, ...]:
-    """Validate explain-v1 final-only prose and its bounded evidence references."""
+    """Validate explain-v2 final-only prose and its bounded evidence references."""
 
     entries = _entries(payload, "explanations", allowed_ids)
     expected = {"arxiv_id", "summary", "reason", "limitation", "evidence_fields"}
@@ -156,7 +158,7 @@ def parse_explanations(
         if set(entry) != expected:
             raise ExternalServiceError("explanation response has unsupported fields")
         text = tuple(entry[field] for field in ("summary", "reason", "limitation"))
-        if not all(isinstance(value, str) and 8 <= len(value) <= 800 for value in text):
+        if not all(isinstance(value, str) and 20 <= len(value) <= 800 for value in text):
             raise ExternalServiceError("explanation text is invalid")
         if _generic_reason(str(text[1])):
             raise ExternalServiceError("explanation reason is generic")
@@ -166,7 +168,7 @@ def parse_explanations(
                 str(text[0]),
                 str(text[1]),
                 str(text[2]),
-                _evidence_fields(entry["evidence_fields"], allowed_evidence_fields),
+                _evidence_fields(entry["evidence_fields"], allowed_evidence_fields, minimum=2),
             )
         )
     _complete_unique(results, allowed_ids)
@@ -213,10 +215,12 @@ def _dimensions(value: object) -> tuple[tuple[QualityDimension, float | None], .
     return tuple(dimensions)
 
 
-def _evidence_fields(value: object, allowed: frozenset[str]) -> tuple[str, ...]:
+def _evidence_fields(
+    value: object, allowed: frozenset[str], *, minimum: int = 1
+) -> tuple[str, ...]:
     if (
         not isinstance(value, list)
-        or not 1 <= len(value) <= 6
+        or not minimum <= len(value) <= 6
         or not all(isinstance(field, str) and field in allowed for field in value)
     ):
         raise ExternalServiceError("model evidence references are invalid")
@@ -244,5 +248,7 @@ def _generic_reason(value: str) -> bool:
         "this paper is relevant.",
         "this is a useful paper.",
     }
+    if not any("a" <= character <= "z" for character in normalized):
+        return False
     words = [word for word in normalized.replace("-", " ").split() if word.isalpha()]
     return normalized in generic or len(set(words)) < 5
