@@ -116,7 +116,9 @@ an institution, and `1.0` combined, configurable through the variables in `.env.
 It writes `runtime/remote-profile.json` with owner-only permissions. The export contains only
 bounded topic terms and inferred arXiv categories; it excludes titles, abstracts, notes,
 annotations, identifiers, collections, and matching evidence. Unchanged local inputs reuse
-derived digest cache entries rather than regenerating them.
+derived digest cache entries rather than regenerating them. URL/domain fragments and reserved
+`zad:`/`ranking-reason:` feedback tags are excluded from interest terms, so review labels cannot
+silently become recommendation topics.
 
 ## Local curated evaluation corpus
 

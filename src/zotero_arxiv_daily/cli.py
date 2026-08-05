@@ -691,7 +691,10 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(
                 "recommendations generated: "
                 f"{manifest.recommendation_count} selected, "
-                f"{manifest.model_requests} model requests"
+                f"{manifest.model_requests} model requests "
+                f"(judge={manifest.judge_requests}, "
+                f"explain={manifest.explanation_requests}, "
+                f"cache_hits={manifest.cache_hits})"
             )
             return 0
     except ApplicationError as error:

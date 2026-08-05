@@ -22,6 +22,10 @@ from zotero_arxiv_daily.profile.models import (
 )
 
 _WORD = re.compile(r"[A-Za-z][A-Za-z0-9-]{2,31}")
+_LINK = re.compile(
+    r"(?:\bhttps?://|\bwww\.)[^\s<>\"]+|\b(?:github|gitlab|bitbucket)\.com/[^\s<>\"]+",
+    re.IGNORECASE,
+)
 _SENSITIVE = re.compile(r"(?:sk-[A-Za-z0-9]{12,}|ghp_[A-Za-z0-9]{12,}|password|secret)", re.I)
 _STOP_WORDS = frozenset(
     {
@@ -31,12 +35,22 @@ _STOP_WORDS = frozenset(
         "are",
         "for",
         "from",
+        "github",
         "into",
+        "gitlab",
+        "bitbucket",
+        "com",
+        "doi",
+        "http",
+        "https",
         "note",
+        "net",
+        "org",
         "paper",
         "that",
         "the",
         "this",
+        "www",
         "with",
     }
 )
@@ -83,6 +97,8 @@ _SIGNAL_WEIGHTS = {
     "comment": 2.5,
     "curated": 4.0,
 }
+_FEEDBACK_TAG_PREFIXES = ("ranking-reason:", "zad:")
+_LABEL_COLLECTION_NAMES = frozenset({"positive", "negative", "hard negative"})
 
 
 def build_profile(
@@ -117,12 +133,16 @@ def build_profile(
                 )
         for tag, manual in root.get("tags", []):
             tag_text = str(tag)
+            if tag_text.casefold().startswith(_FEEDBACK_TAG_PREFIXES):
+                continue
             weight = _SIGNAL_WEIGHTS["manual_tag"] if manual else _SIGNAL_WEIGHTS["library"]
             if tag_text.casefold().startswith("ranking-curated:"):
                 weight = _SIGNAL_WEIGHTS["curated"]
                 tag_text = tag_text.split(":", 1)[1]
             _add_terms(scores, recent, _terms(tag_text), weight, recency)
         for collection in root.get("collection_names", []):
+            if str(collection).casefold().strip() in _LABEL_COLLECTION_NAMES:
+                continue
             _add_terms(
                 scores,
                 recent,
@@ -262,6 +282,7 @@ def _text_fields(record: dict[str, Any]) -> str:
 
 
 def _terms(value: str) -> tuple[str, ...]:
+    value = _LINK.sub(" ", value)
     return tuple(
         word.casefold()
         for word in _WORD.findall(value)

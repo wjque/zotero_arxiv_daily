@@ -24,7 +24,7 @@ from zotero_arxiv_daily.profile.models import (
 )
 from zotero_arxiv_daily.zotero.storage import ZoteroStore
 
-_PROMPT_VERSION = "deterministic-digest-v2"
+_PROMPT_VERSION = "deterministic-digest-v3"
 _SECRET_NAME = re.compile(r"^[A-Z][A-Z0-9_]{0,99}$")
 
 

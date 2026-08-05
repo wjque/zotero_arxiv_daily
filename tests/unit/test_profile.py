@@ -37,6 +37,33 @@ def test_remote_projection_excludes_secret_like_terms() -> None:
     assert not any(term.startswith("sk-") for term in remote.topics)
 
 
+def test_profile_drops_link_artifacts_but_keeps_subject_terms() -> None:
+    root = json.dumps({"title": "Diffusion models", "tags": []})
+    child = json.dumps(
+        {"annotation_comment": "Implementation: https://github.com/example/diffusion-models"}
+    )
+
+    remote = project_remote(build_profile((("PAPER001", "hash", root, (child,)),), 1))
+
+    assert "diffusion" in remote.topics
+    assert not {"https", "github", "com", "org"} & set(remote.topics)
+
+
+def test_profile_does_not_treat_feedback_labels_as_interest_terms() -> None:
+    root = json.dumps(
+        {
+            "title": "Diffusion models",
+            "tags": [["zad:novel-insight", True], ["ranking-reason:poor-clarity", True]],
+            "collection_names": ["Positive", "Hard Negative"],
+        }
+    )
+
+    remote = project_remote(build_profile((("PAPER001", "hash", root, ()),), 1))
+
+    assert "diffusion" in remote.topics
+    assert not {"zad", "novel-insight", "ranking-reason", "poor-clarity"} & set(remote.topics)
+
+
 def test_profile_keeps_library_evidence_weak_and_derives_time_decayed_facets() -> None:
     root = json.dumps(
         {
