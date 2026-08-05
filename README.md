@@ -200,7 +200,8 @@ uv run zotero-arxiv-daily evaluate shadow \
 ```
 
 The ignored `runtime/shadow-report.json` contains aggregate metrics and feature-group ablations
-only. Sparse or zero-overlap reports remain uncertainty-bearing reference results: they cannot
+only. It reports raw corpus Recall, candidate-label overlap, and candidate-conditional Recall
+separately. Sparse or zero-overlap reports remain uncertainty-bearing reference results: they cannot
 authorize automatic tuning, but an explicit operator may review and approve a reversible canary.
 Shadow evaluation itself never changes feedback state or publishes a batch. Activation requires an
 eligible report for the same version:
@@ -217,6 +218,21 @@ opt-in for fixed categorical relevance signals such as `topic_overlap`; it never
 annotations, collection names, labels, or feedback prose. Do not set it without documenting the
 field-level trust-boundary approval. Batch size, request token/byte limits, retry count, request
 count, and provider output tokens are bounded by the `ZAD_LLM_*` settings in `.env.example`.
+
+The provider must return measured usage metadata before an efficiency gate can pass. Record the
+privacy-safe manifest after each run, then compare equal-model baseline and candidate histories:
+
+```bash
+uv run zotero-arxiv-daily evaluate record-manifest
+uv run zotero-arxiv-daily evaluate efficiency \
+  --baseline runtime/baseline-manifests.json \
+  --candidate runtime/run-manifest-history.json \
+  --output runtime/efficiency-report.json
+```
+
+The comparison uses median input/output tokens per deployed recommendation, requests, cache hits,
+provider latency, duration, and measured cost. Missing actual token usage blocks comparability; the
+release target is at least a 25% median output-token reduction.
 
 To publish a validated exported profile to a GitHub Actions Secret, authenticate `gh` locally and
 set `ZAD_GITHUB_REPOSITORY`; the profile JSON is sent on standard input rather than in command-line
@@ -259,6 +275,14 @@ publication history. An empty legacy pool receives one bounded seven-day backfil
 prepared during generation and promoted to the protected `state` branch only after Pages deployment
 succeeds. Existing v0.1.0 profiles, arXiv state, and publishable payloads remain readable; rebuilding
 and republishing the profile activates schema-v2 watchlists.
+
+The protected workflow state is stored as an AES-GCM bundle in `state.enc.json`, using the separate
+`ZAD_STATE_ENCRYPTION_KEY` GitHub Secret. It must not reuse `ZAD_PAGES_PASSPHRASE`; the state key is
+never sent to the browser. A legacy plaintext state branch is migrated once and then rejected if it
+cannot be validated or decrypted. After a verified migration, a repository administrator must run a
+manual workflow with `purge_legacy_state_history=true`; it replaces the `state` branch with a
+single encrypted-root commit using `--force-with-lease`. Confirm the protected encrypted backup and
+the absence of raw branch URLs before this irreversible history purge.
 
 When retrieval uses a recent validated snapshot after bounded failure, the private run manifest records
 the degraded reason and source checkpoint, and the published site marks the candidate pool as degraded.

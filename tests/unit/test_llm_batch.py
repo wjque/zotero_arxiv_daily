@@ -4,6 +4,7 @@ import pytest
 
 from zotero_arxiv_daily.core.errors import ExternalServiceError
 from zotero_arxiv_daily.llm.batch import pack_complete_records, propose_bounded
+from zotero_arxiv_daily.llm.contracts import ProviderCompletion
 
 
 class Provider:
@@ -46,6 +47,23 @@ def test_transient_provider_failure_retries_once_within_a_bounded_budget() -> No
     _, usage = propose_bounded(RetryingProvider(), [{"arxiv_id": "2401.00001"}], retries=1)
 
     assert usage.requests == 2
+
+
+def test_provider_usage_is_aggregated_when_available() -> None:
+    class UsageProvider:
+        def propose(self, candidates: list[dict[str, object]]) -> ProviderCompletion:
+            return ProviderCompletion(
+                '{"proposals":[{"arxiv_id":"2401.00001","quality":1,"summary":"s","reason":"r"}]}',
+                input_tokens=12,
+                output_tokens=7,
+                latency_seconds=0.25,
+            )
+
+    _, usage = propose_bounded(UsageProvider(), [{"arxiv_id": "2401.00001"}])
+
+    assert usage.actual_input_tokens == 12
+    assert usage.actual_output_tokens == 7
+    assert usage.latency_seconds == 0.25
 
 
 def test_invalid_structured_response_retries_once() -> None:

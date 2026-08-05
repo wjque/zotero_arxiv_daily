@@ -25,6 +25,7 @@ from zotero_arxiv_daily.llm.contracts import (
     QualityDimension,
     parse_proposals,
 )
+from zotero_arxiv_daily.llm.preference_context import validate_preference_signals
 from zotero_arxiv_daily.llm.refinement import StructuredProvider, run_explanations, run_judgments
 from zotero_arxiv_daily.profile.models import RemoteProfile
 from zotero_arxiv_daily.ranking.models import (
@@ -114,12 +115,17 @@ def package_result(
     completed_at: datetime | None = None,
     estimated_input_tokens: int = 0,
     estimated_output_tokens: int = 0,
+    actual_input_tokens: int | None = None,
+    actual_output_tokens: int | None = None,
+    actual_cost_usd: float | None = None,
+    provider_latency_seconds: float | None = None,
     judge_requests: int = 0,
     explanation_requests: int = 0,
     judge_cache_hits: int = 0,
     explanation_cache_hits: int = 0,
     retry_count: int = 0,
     weight_set_version: str = DEFAULT_WEIGHT_SET.version,
+    preference_context_enabled: bool = False,
 ) -> tuple[RecommendationSet, RecommendationRunManifest]:
     """Create versioned recommendation data and non-sensitive operational metadata."""
 
@@ -148,12 +154,17 @@ def package_result(
         profile_library_version=profile.source_library_version,
         estimated_input_tokens=estimated_input_tokens,
         estimated_output_tokens=estimated_output_tokens,
+        actual_input_tokens=actual_input_tokens,
+        actual_output_tokens=actual_output_tokens,
         judge_requests=judge_requests,
         explanation_requests=explanation_requests,
         judge_cache_hits=judge_cache_hits,
         explanation_cache_hits=explanation_cache_hits,
         retry_count=retry_count,
         weight_set_version=weight_set_version,
+        actual_cost_usd=actual_cost_usd,
+        provider_latency_seconds=provider_latency_seconds,
+        preference_context_enabled=preference_context_enabled,
     )
     return result, manifest
 
@@ -239,6 +250,11 @@ def run_recommendation(
     )
     duration_seconds = perf_counter() - started
     estimated_cost_usd = estimate_cost(usage.estimated_tokens) if estimate_cost else 0.0
+    actual_tokens = (
+        usage.actual_input_tokens + usage.actual_output_tokens
+        if usage.actual_input_tokens is not None and usage.actual_output_tokens is not None
+        else None
+    )
     return package_result(
         records,
         profile,
@@ -252,6 +268,13 @@ def run_recommendation(
         duration_seconds=duration_seconds,
         completed_at=completed_at or datetime.now(UTC),
         estimated_input_tokens=usage.estimated_tokens,
+        estimated_output_tokens=0,
+        actual_input_tokens=usage.actual_input_tokens,
+        actual_output_tokens=usage.actual_output_tokens,
+        actual_cost_usd=(
+            estimate_cost(actual_tokens) if estimate_cost and actual_tokens is not None else None
+        ),
+        provider_latency_seconds=usage.latency_seconds,
         retry_count=usage.retry_count,
         weight_set_version=weight_set.version,
     )
@@ -358,6 +381,12 @@ def run_refined_recommendation(
     selected = select_diverse(judged)
     if not selected:
         tokens = judge_usage.estimated_input_tokens + judge_usage.estimated_output_tokens
+        actual_tokens = (
+            judge_usage.actual_input_tokens + judge_usage.actual_output_tokens
+            if judge_usage.actual_input_tokens is not None
+            and judge_usage.actual_output_tokens is not None
+            else None
+        )
         return package_result(
             (),
             profile,
@@ -372,10 +401,17 @@ def run_refined_recommendation(
             completed_at=completed_at or datetime.now(UTC),
             estimated_input_tokens=judge_usage.estimated_input_tokens,
             estimated_output_tokens=judge_usage.estimated_output_tokens,
+            actual_input_tokens=judge_usage.actual_input_tokens,
+            actual_output_tokens=judge_usage.actual_output_tokens,
+            actual_cost_usd=estimate_cost(actual_tokens)
+            if estimate_cost and actual_tokens is not None
+            else None,
+            provider_latency_seconds=judge_usage.latency_seconds,
             judge_requests=judge_usage.requests,
             judge_cache_hits=judge_usage.cache_hits,
             retry_count=judge_usage.retry_count,
             weight_set_version=weight_set.version,
+            preference_context_enabled=allow_preference_context,
         )
     explanation_records = tuple(
         _explanation_record(
@@ -424,6 +460,28 @@ def run_refined_recommendation(
     input_tokens = judge_usage.estimated_input_tokens + explain_usage.estimated_input_tokens
     output_tokens = judge_usage.estimated_output_tokens + explain_usage.estimated_output_tokens
     tokens = input_tokens + output_tokens
+    actual_input_tokens = (
+        judge_usage.actual_input_tokens + explain_usage.actual_input_tokens
+        if judge_usage.actual_input_tokens is not None
+        and explain_usage.actual_input_tokens is not None
+        else None
+    )
+    actual_output_tokens = (
+        judge_usage.actual_output_tokens + explain_usage.actual_output_tokens
+        if judge_usage.actual_output_tokens is not None
+        and explain_usage.actual_output_tokens is not None
+        else None
+    )
+    actual_tokens = (
+        actual_input_tokens + actual_output_tokens
+        if actual_input_tokens is not None and actual_output_tokens is not None
+        else None
+    )
+    provider_latency = (
+        judge_usage.latency_seconds + explain_usage.latency_seconds
+        if judge_usage.latency_seconds is not None and explain_usage.latency_seconds is not None
+        else None
+    )
     return package_result(
         records,
         profile,
@@ -438,12 +496,19 @@ def run_refined_recommendation(
         completed_at=completed_at or datetime.now(UTC),
         estimated_input_tokens=input_tokens,
         estimated_output_tokens=output_tokens,
+        actual_input_tokens=actual_input_tokens,
+        actual_output_tokens=actual_output_tokens,
+        actual_cost_usd=estimate_cost(actual_tokens)
+        if estimate_cost and actual_tokens is not None
+        else None,
+        provider_latency_seconds=provider_latency,
         judge_requests=judge_usage.requests,
         explanation_requests=explain_usage.requests,
         judge_cache_hits=judge_usage.cache_hits,
         explanation_cache_hits=explain_usage.cache_hits,
         retry_count=judge_usage.retry_count + explain_usage.retry_count,
         weight_set_version=weight_set.version,
+        preference_context_enabled=allow_preference_context,
     )
 
 
@@ -575,7 +640,7 @@ def _relevance_signals(item: ScoredCandidate) -> tuple[str, ...]:
         signals.append("watched_author")
     if components.get("watched_institution", 0.0) > 0:
         signals.append("watched_institution")
-    return tuple(signals[:4])
+    return validate_preference_signals(tuple(signals[:4]))
 
 
 def _refined_records(

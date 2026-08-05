@@ -239,7 +239,13 @@ def evaluate_ranking(
     brier = _brier_score(ordered, labels)
     pairwise_accuracy = _pairwise_accuracy(ordered, corpus, selected_ids)
     insufficient = _insufficiency_reason(len(labels), len(positives), len(corpus.pairwise))
-    candidate_overlap = len(set(labels) & _ranked_identifiers(ordered))
+    ranked_identifiers = _ranked_identifiers(ordered)
+    candidate_overlap = len(set(labels) & ranked_identifiers)
+    candidate_positive_labels = len(positives & ranked_identifiers)
+    candidate_negative_labels = len(negatives & ranked_identifiers)
+    candidate_recall = (
+        positive_top / candidate_positive_labels if candidate_positive_labels else None
+    )
     return RankingMetrics(
         len(labels),
         len(positives),
@@ -256,6 +262,9 @@ def evaluate_ranking(
         insufficient is not None or len(labels) < 5 or candidate_overlap < 5,
         insufficient,
         candidate_overlap,
+        candidate_positive_labels,
+        candidate_negative_labels,
+        candidate_recall,
     )
 
 
@@ -270,7 +279,7 @@ def compare_rankings(
     """Report metric deltas and conservative eligibility for later manual approval."""
 
     ndcg_delta = _delta(candidate.ndcg_at_k, baseline.ndcg_at_k)
-    recall_delta = _delta(candidate.recall_at_k, baseline.recall_at_k)
+    recall_delta = _delta(candidate.candidate_recall_at_k, baseline.candidate_recall_at_k)
     negative_rate_delta = _delta(candidate.negative_rate_at_k, baseline.negative_rate_at_k)
     reasons: list[str] = []
     warnings: list[str] = []
@@ -283,6 +292,10 @@ def compare_rankings(
         warnings.append("few overlapping labels; metric uncertainty is high")
     if overlap < 5:
         warnings.append("sparse independent-label sample; metric uncertainty is high")
+    if baseline.candidate_positive_labels == 0 or candidate.candidate_positive_labels == 0:
+        warnings.append(
+            "no positive labels overlap the candidate pool; Recall@K is not interpretable"
+        )
     if ndcg_delta is None:
         warnings.append("NDCG is unavailable")
     elif ndcg_delta < 0.05:

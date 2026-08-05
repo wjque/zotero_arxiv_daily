@@ -10,6 +10,7 @@ def test_daily_workflow_guards_model_cost_and_promotes_history_after_deployment(
     assert "allow_peak_generation" in workflow
     assert "enable_llm_refinement" in workflow
     assert "approve_llm_preference_context" in workflow
+    assert "purge_legacy_state_history" in workflow
     assert (
         "ZAD_LLM_REFINEMENT_ENABLED: ${{ inputs.enable_llm_refinement && 'true' || 'false' }}"
         in workflow
@@ -21,7 +22,17 @@ def test_daily_workflow_guards_model_cost_and_promotes_history_after_deployment(
     assert "generation-window.outputs.decision == 'allowed'" in workflow
     assert workflow.index("Deploy GitHub Pages") < workflow.index("Persist successful run state")
     assert "git worktree add -B state runtime/state origin/state" in workflow
-    assert "recommendation-history.next.json runtime/state/recommendation-history.json" in workflow
+    assert "ZAD_STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}" in workflow
+    assert "state decrypt" in workflow
+    assert "state encrypt" in workflow
+    assert "Purge legacy plaintext state history" in workflow
+    assert "push --force-with-lease=refs/heads/state" in workflow
+    assert "State tip still contains plaintext protected state" in workflow
+    assert "cp runtime/state.enc.json runtime/state/" in workflow
+    assert "git -C runtime/state rm -f -- '*.json'" in workflow
+    assert "run-manifest-history.json" in workflow
+    assert "cp runtime/arxiv-state.json runtime/feedback-state.json" not in workflow
+    assert "evaluate record-manifest" in workflow
 
 
 def test_daily_workflow_reconciles_a_deployed_batch_after_state_push_failure() -> None:

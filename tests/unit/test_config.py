@@ -15,6 +15,7 @@ def test_default_recommendation_output_language_is_english() -> None:
     assert config.feedback_activation_interval_days == 7
     assert config.llm_request_token_limit == 12_000
     assert config.llm_request_byte_limit == 65_536
+    assert config.state_encryption_key is None
 
 
 def test_configuration_precedence_is_defaults_file_environment_then_cli(tmp_path: Path) -> None:
@@ -75,6 +76,14 @@ def test_refinement_preference_context_requires_an_explicit_enabled_refinement_p
     assert config.llm_preference_context_approved
     with pytest.raises(ConfigurationError, match="requires llm_refinement_enabled"):
         load_config(environment={"ZAD_LLM_PREFERENCE_CONTEXT_APPROVED": "true"})
+
+
+def test_state_encryption_key_is_separate_and_bounded() -> None:
+    config = load_config(environment={"ZAD_STATE_ENCRYPTION_KEY": "state-passphrase-1234"})
+
+    assert config.state_encryption_key == "state-passphrase-1234"
+    with pytest.raises(ConfigurationError, match="state_encryption_key"):
+        load_config(environment={"ZAD_STATE_ENCRYPTION_KEY": "too-short"})
 
 
 def test_llm_budget_configuration_is_bounded_and_typed() -> None:

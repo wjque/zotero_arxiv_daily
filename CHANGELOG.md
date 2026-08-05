@@ -14,6 +14,9 @@
   batching, separate caches, bounded retries, and final-candidate-only prose generation.
 - Added publishable schema v4 quality, uncertainty, preference-signal, and limitation fields with
   exact v1-v3 readers and encrypted desktop/mobile browser execution tests.
+- Added provider-reported token, latency, and cost fields to private run manifests, bounded
+  manifest-history retention, and a privacy-safe median efficiency comparison with a 25% output-token
+  reduction gate.
 
 ### Changed
 
@@ -23,6 +26,8 @@
   and post-deployment state reconciliation while preserving the previous usable site on failure.
 - Added optional exact-identity public evidence adapters and kept missing or inapplicable evidence
   distinct from negative quality evidence.
+- Split raw corpus Recall from candidate-pool coverage and candidate-conditional Recall so a
+  zero-overlap corpus cannot be misreported as a coarse-ranking regression.
 
 ### Compatibility
 
@@ -36,6 +41,9 @@
 - Raw Zotero content, curated labels, free-text feedback, prompts, and credentials remain excluded
   from browser artifacts and public state. New model preference fields remain disabled until an
   explicit field-level trust-boundary approval.
+- Protected workflow state now uses a separate AES-GCM key and one encrypted bundle. A manual,
+  lease-protected state-history purge is available after verified migration to expunge legacy
+  plaintext commits.
 
 ## v0.1.2 - 2026-08-02
 

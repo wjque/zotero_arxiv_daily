@@ -90,3 +90,6 @@ class RecommendationRunManifest:
     candidate_pool_degraded: bool = False
     candidate_pool_degraded_reason: str | None = None
     candidate_pool_source_checkpoint: datetime | None = None
+    actual_cost_usd: float | None = None
+    provider_latency_seconds: float | None = None
+    preference_context_enabled: bool = False

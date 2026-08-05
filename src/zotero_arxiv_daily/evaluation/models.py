@@ -176,6 +176,9 @@ class RankingMetrics:
     provisional: bool
     insufficiency_reason: str | None
     candidate_overlap: int = 0
+    candidate_positive_labels: int = 0
+    candidate_negative_labels: int = 0
+    candidate_recall_at_k: float | None = None
 
 
 @dataclass(frozen=True, slots=True)

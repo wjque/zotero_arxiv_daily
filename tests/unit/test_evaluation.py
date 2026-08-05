@@ -222,6 +222,9 @@ def test_metrics_report_core_values_pairwise_accuracy_and_conservative_compariso
     assert candidate.negative_rate_at_k == pytest.approx(0.5)
     assert candidate.pairwise_accuracy == 1.0
     assert candidate.candidate_overlap == 3
+    assert candidate.candidate_positive_labels == 2
+    assert candidate.candidate_negative_labels == 1
+    assert candidate.candidate_recall_at_k == pytest.approx(0.5)
     assert candidate.source_coverage_at_k == 1
     assert candidate.category_coverage_at_k == 1
     assert candidate.provisional
@@ -269,6 +272,8 @@ def test_metrics_report_zero_candidate_overlap_separately_from_label_count(
 
     assert metrics.evaluated_labels == 5
     assert metrics.candidate_overlap == 0
+    assert metrics.candidate_positive_labels == 0
+    assert metrics.candidate_recall_at_k is None
     assert metrics.provisional
 
 

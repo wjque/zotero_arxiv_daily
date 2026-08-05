@@ -20,6 +20,11 @@ on:
         required: false
         default: false
         type: boolean
+      purge_legacy_state_history:
+        description: Replace verified encrypted state history to expunge legacy plaintext commits
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -49,10 +54,12 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          ZAD_STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}
         run: |
           set -euo pipefail
           mkdir -p runtime
           echo "reconcile=false" >> "$GITHUB_OUTPUT"
+          echo "legacy=false" >> "$GITHUB_OUTPUT"
           set +e
           git ls-remote --exit-code --heads origin state > runtime/state-ref.txt 2> runtime/state-fetch-error.txt
           state_status=$?
@@ -61,13 +68,23 @@ jobs:
             0)
               git fetch --no-tags origin state
               git worktree add --detach runtime/state FETCH_HEAD
-              for required in arxiv-state.json feedback-state.json recommendation-history.json; do
-                test -f "runtime/state/$required" || { echo "Persisted state is missing $required" >&2; exit 1; }
-                cp "runtime/state/$required" runtime/
-              done
-              for optional in proposal-cache.json ranking-weights.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json; do
-                if test -f "runtime/state/$optional"; then cp "runtime/state/$optional" runtime/; fi
-              done
+              if test -f runtime/state/state.enc.json; then
+                uv run zotero-arxiv-daily state decrypt \
+                  --input runtime/state/state.enc.json --output-dir runtime
+              elif test -f runtime/state/feedback-state.json; then
+                echo "Legacy unencrypted workflow state requires migration." >&2
+                for required in arxiv-state.json feedback-state.json recommendation-history.json; do
+                  test -f "runtime/state/$required" || { echo "Persisted state is missing $required" >&2; exit 1; }
+                  cp "runtime/state/$required" runtime/
+                done
+                for optional in proposal-cache.json ranking-weights.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json run-manifest.json run-manifest-history.json; do
+                  if test -f "runtime/state/$optional"; then cp "runtime/state/$optional" runtime/; fi
+                done
+                echo "legacy=true" >> "$GITHUB_OUTPUT"
+              else
+                echo "Persisted state bundle is missing." >&2
+                exit 1
+              fi
               ;;
             2)
               echo "No persisted state branch exists; starting an explicitly empty initial state."
@@ -138,6 +155,56 @@ jobs:
               fi
             fi
           fi
+      - name: Migrate legacy workflow state to encryption
+        if: steps.restore-state.outputs.legacy == 'true'
+        env:
+          ZAD_STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}
+        run: |
+          set -euo pipefail
+          uv run zotero-arxiv-daily state encrypt \
+            --input-dir runtime --output runtime/state.enc.json
+          git worktree remove runtime/state --force
+          git worktree add -B state runtime/state origin/state
+          git -C runtime/state rm -f -- '*.json' || true
+          cp runtime/state.enc.json runtime/state/
+          git -C runtime/state add -A -- '*.json'
+          git -C runtime/state -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'chore(state): encrypt legacy workflow state'
+          for attempt in 1 2 3; do
+            if git -C runtime/state push origin HEAD:state; then
+              git fetch --no-tags origin state
+              exit 0
+            fi
+            test "$attempt" -lt 3 || exit 1
+            sleep $((attempt * 2))
+          done
+      - name: Purge legacy plaintext state history
+        if: github.event_name == 'workflow_dispatch' && inputs.purge_legacy_state_history
+        env:
+          ZAD_STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}
+        run: |
+          set -euo pipefail
+          if git worktree list --porcelain | grep -q '^worktree .*/runtime/state$'; then
+            git worktree remove runtime/state --force
+          fi
+          git fetch --no-tags origin state
+          git worktree add --detach runtime/state origin/state
+          test -f runtime/state/state.enc.json
+          for plaintext_state in arxiv-state.json feedback-state.json recommendation-history.json proposal-cache.json ranking-weights.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json run-manifest.json run-manifest-history.json; do
+            test ! -e "runtime/state/$plaintext_state" || {
+              echo "State tip still contains plaintext protected state: $plaintext_state" >&2
+              exit 1
+            }
+          done
+          uv run zotero-arxiv-daily state decrypt \
+            --input runtime/state/state.enc.json --output-dir runtime/state-validation
+          cp runtime/state/state.enc.json runtime/state-before-history-purge.enc.json
+          git -C runtime/state checkout --orphan "state-purged-${GITHUB_RUN_ID}"
+          git -C runtime/state rm -rf --ignore-unmatch .
+          cp runtime/state-before-history-purge.enc.json runtime/state/state.enc.json
+          git -C runtime/state add -- state.enc.json
+          git -C runtime/state -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'chore(state): purge legacy plaintext history'
+          git -C runtime/state push --force-with-lease=refs/heads/state origin HEAD:state
+          git fetch --no-tags origin state
       - name: Reconcile previously deployed batch
         if: steps.restore-state.outputs.reconcile == 'true'
         run: |
@@ -158,6 +225,8 @@ jobs:
           PY
       - name: Persist reconciled run state
         if: steps.restore-state.outputs.reconcile == 'true'
+        env:
+          ZAD_STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}
         run: |
           set -euo pipefail
           if git worktree list --porcelain | grep -q '^worktree .*/runtime/state$'; then
@@ -168,10 +237,10 @@ jobs:
           else
             git worktree add -B state runtime/state
           fi
-          cp runtime/arxiv-state.json runtime/feedback-state.json runtime/ranking-weights.json runtime/deployment-receipt.json runtime/state/
-          if test -f runtime/proposal-cache.json; then cp runtime/proposal-cache.json runtime/state/; fi
-          cp runtime/pending-recommendation-history.json runtime/state/recommendation-history.json
-          rm -f runtime/state/pending-publishable-recommendations.json runtime/state/pending-recommendation-history.json
+          uv run zotero-arxiv-daily state encrypt \
+            --input-dir runtime --output runtime/state.enc.json
+          git -C runtime/state rm -f -- '*.json' || true
+          cp runtime/state.enc.json runtime/state/
           git -C runtime/state add -A -- '*.json'
           git -C runtime/state -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'chore(state): reconcile deployed batch'
           for attempt in 1 2 3; do
@@ -214,10 +283,16 @@ jobs:
           ZAD_DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" uv run zotero-arxiv-daily recommend run --profile runtime/remote-profile.json --candidate-state runtime/arxiv-state.json --workflow-run-id "${{ github.run_id }}" --workflow-run-attempt "${{ github.run_attempt }}" --source-revision "${{ github.sha }}"
           ZAD_PAGES_PASSPHRASE="$PAGES_PASSPHRASE" uv run zotero-arxiv-daily site build
           uv run python scripts/check_artifacts.py
+      - name: Record privacy-safe run manifest
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        run: |
+          set -euo pipefail
+          uv run zotero-arxiv-daily evaluate record-manifest
       - name: Prepare generated state for deployment
         if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
         env:
           ARTIFACT_DIGEST: ${{ hashFiles('runtime/site/data/*') }}
+          ZAD_STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}
         run: |
           set -euo pipefail
           python - <<'PY'
@@ -245,6 +320,8 @@ jobs:
           PY
           cp runtime/publishable-recommendations.json runtime/pending-publishable-recommendations.json
           cp runtime/recommendation-history.next.json runtime/pending-recommendation-history.json
+          uv run zotero-arxiv-daily state encrypt \
+            --input-dir runtime --output runtime/state.enc.json
           if git worktree list --porcelain | grep -q '^worktree .*/runtime/state$'; then
             git worktree remove runtime/state --force
           fi
@@ -253,8 +330,8 @@ jobs:
           else
             git worktree add -B state runtime/state
           fi
-          cp runtime/arxiv-state.json runtime/feedback-state.json runtime/ranking-weights.json runtime/deployment-receipt.json runtime/pending-publishable-recommendations.json runtime/pending-recommendation-history.json runtime/state/
-          if test -f runtime/proposal-cache.json; then cp runtime/proposal-cache.json runtime/state/; fi
+          git -C runtime/state rm -f -- '*.json' || true
+          cp runtime/state.enc.json runtime/state/
           git -C runtime/state add -A -- '*.json'
           git -C runtime/state -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'chore(state): prepare daily pipeline state'
           for attempt in 1 2 3; do
@@ -296,9 +373,13 @@ jobs:
           PY
       - name: Persist successful run state
         if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        env:
+          ZAD_STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}
         run: |
           set -euo pipefail
           uv run zotero-arxiv-daily feedback record-impressions --input runtime/publishable-recommendations.json
+          uv run zotero-arxiv-daily state encrypt \
+            --input-dir runtime --output runtime/state.enc.json
           if git worktree list --porcelain | grep -q '^worktree .*/runtime/state$'; then
             git worktree remove runtime/state --force
           fi
@@ -307,10 +388,8 @@ jobs:
           else
             git worktree add -B state runtime/state
           fi
-          cp runtime/arxiv-state.json runtime/feedback-state.json runtime/ranking-weights.json runtime/deployment-receipt.json runtime/state/
-          if test -f runtime/proposal-cache.json; then cp runtime/proposal-cache.json runtime/state/; fi
-          cp runtime/recommendation-history.next.json runtime/state/recommendation-history.json
-          rm -f runtime/state/pending-publishable-recommendations.json runtime/state/pending-recommendation-history.json
+          git -C runtime/state rm -f -- '*.json' || true
+          cp runtime/state.enc.json runtime/state/
           git -C runtime/state add -A -- '*.json'
           git -C runtime/state -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'chore(state): update daily pipeline state'
           for attempt in 1 2 3; do

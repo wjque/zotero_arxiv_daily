@@ -11,6 +11,25 @@ from zotero_arxiv_daily.core.errors import ConfigurationError, ExternalServiceEr
 
 
 @dataclass(frozen=True, slots=True)
+class ProviderCompletion:
+    """Provider-neutral completion content and optional measured usage."""
+
+    content: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None
+    latency_seconds: float | None = None
+
+    def __post_init__(self) -> None:
+        if not self.content.strip():
+            raise ValueError("provider completion content must not be empty")
+        for value in (self.input_tokens, self.output_tokens):
+            if value is not None and value < 0:
+                raise ValueError("provider token usage must not be negative")
+        if self.latency_seconds is not None and self.latency_seconds < 0:
+            raise ValueError("provider latency must not be negative")
+
+
+@dataclass(frozen=True, slots=True)
 class ModelProposal:
     arxiv_id: str
     quality: float

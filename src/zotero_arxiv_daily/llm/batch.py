@@ -7,11 +7,11 @@ from dataclasses import dataclass
 from typing import Protocol
 
 from zotero_arxiv_daily.core.errors import ExternalServiceError
-from zotero_arxiv_daily.llm.contracts import ModelProposal, parse_proposals
+from zotero_arxiv_daily.llm.contracts import ModelProposal, ProviderCompletion, parse_proposals
 
 
 class ProposalProvider(Protocol):
-    def propose(self, candidates: list[dict[str, object]]) -> str: ...
+    def propose(self, candidates: list[dict[str, object]]) -> str | ProviderCompletion: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -20,6 +20,9 @@ class ModelUsage:
     cache_hits: int
     estimated_tokens: int
     retry_count: int = 0
+    actual_input_tokens: int | None = None
+    actual_output_tokens: int | None = None
+    latency_seconds: float | None = None
 
 
 DEFAULT_REQUEST_TOKEN_LIMIT = 12_000
@@ -96,11 +99,15 @@ def propose_bounded(
     )
     requests = 0
     retries_used = 0
+    actual_input: list[int] = []
+    actual_output: list[int] = []
+    latencies: list[float] = []
     for batch in batches:
         for attempt in range(retries + 1):
             requests += 1
             try:
-                content = provider.propose(list(batch))
+                response = provider.propose(list(batch))
+                content = response.content if isinstance(response, ProviderCompletion) else response
                 value = json.loads(content)
                 raw = json.dumps(value["proposals"])
                 parsed = parse_proposals(raw, frozenset(str(item["arxiv_id"]) for item in batch))
@@ -117,4 +124,19 @@ def propose_bounded(
                 continue
             break
         proposals.extend(parsed)
-    return tuple(proposals), ModelUsage(requests, 0, tokens, retries_used)
+        if isinstance(response, ProviderCompletion):
+            if response.input_tokens is not None:
+                actual_input.append(response.input_tokens)
+            if response.output_tokens is not None:
+                actual_output.append(response.output_tokens)
+            if response.latency_seconds is not None:
+                latencies.append(response.latency_seconds)
+    return tuple(proposals), ModelUsage(
+        requests,
+        0,
+        tokens,
+        retries_used,
+        sum(actual_input) if len(actual_input) == len(batches) else None,
+        sum(actual_output) if len(actual_output) == len(batches) else None,
+        sum(latencies) if latencies else None,
+    )

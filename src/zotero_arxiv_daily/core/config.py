@@ -25,6 +25,7 @@ _ENVIRONMENT_KEYS = {
     "ZAD_GITHUB_REPOSITORY": "github_repository",
     "ZAD_GITHUB_TOKEN": "github_token",
     "ZAD_PAGES_PASSPHRASE": "pages_passphrase",
+    "ZAD_STATE_ENCRYPTION_KEY": "state_encryption_key",
     "ZAD_PUBLIC_OUTPUT": "public_output",
     "ZAD_OUTPUT_LANGUAGE": "output_language",
     "ZAD_AUTHOR_PREFERENCE_BONUS": "author_preference_bonus",
@@ -67,6 +68,7 @@ class AppConfig:
     github_repository: str | None = None
     github_token: str | None = None
     pages_passphrase: str | None = None
+    state_encryption_key: str | None = None
     public_output: bool = False
     output_language: str = "en"
     watched_authors: tuple[ConfiguredIdentity, ...] = ()
@@ -106,6 +108,8 @@ class AppConfig:
             raise ConfigurationError("recommendation_candidate_limit must be between 40 and 80")
         if self.public_output and self.pages_passphrase:
             raise ConfigurationError("pages_passphrase must be unset when public_output is enabled")
+        if self.state_encryption_key is not None and len(self.state_encryption_key) < 16:
+            raise ConfigurationError("state_encryption_key must contain at least 16 characters")
         if not 0 <= self.author_preference_bonus <= 1:
             raise ConfigurationError("author_preference_bonus must be between zero and one")
         if not 0 <= self.institution_preference_bonus <= 1:
@@ -177,6 +181,7 @@ def load_config(
         github_repository=_optional_string_value(normalized_values, "github_repository"),
         github_token=_optional_string_value(normalized_values, "github_token"),
         pages_passphrase=_optional_string_value(normalized_values, "pages_passphrase"),
+        state_encryption_key=_optional_string_value(normalized_values, "state_encryption_key"),
         public_output=_bool_value(normalized_values, "public_output", defaults.public_output),
         output_language=_string_value(
             normalized_values, "output_language", defaults.output_language

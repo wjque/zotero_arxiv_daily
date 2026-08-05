@@ -24,6 +24,7 @@ from zotero_arxiv_daily.evaluation.corpus import (
     CuratedCorpusMapping,
     ZoteroCorpusItem,
 )
+from zotero_arxiv_daily.evaluation.efficiency import compare_manifest_files, record_manifest
 from zotero_arxiv_daily.evaluation.offline import (
     EvaluationSnapshotStore,
     make_evaluation_snapshot,
@@ -44,6 +45,7 @@ from zotero_arxiv_daily.profile.service import (
     read_remote_profile,
 )
 from zotero_arxiv_daily.ranking.weights import DEFAULT_WEIGHT_SET, WeightSet, WeightSetRegistry
+from zotero_arxiv_daily.security.state import decrypt_state_bundle, encrypt_state_directory
 from zotero_arxiv_daily.site.build import build_site
 from zotero_arxiv_daily.site.models import (
     WorkflowRun,
@@ -196,6 +198,37 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_shadow_parser.add_argument(
         "--output", type=Path, default=Path("runtime/shadow-report.json")
     )
+    evaluate_record_manifest_parser = evaluate_commands.add_parser(
+        "record-manifest", help="Append one privacy-safe run manifest to local history"
+    )
+    evaluate_record_manifest_parser.add_argument(
+        "--input", type=Path, default=Path("runtime/run-manifest.json")
+    )
+    evaluate_record_manifest_parser.add_argument(
+        "--history", type=Path, default=Path("runtime/run-manifest-history.json")
+    )
+    evaluate_efficiency_parser = evaluate_commands.add_parser(
+        "efficiency", help="Compare measured baseline and candidate run manifests"
+    )
+    evaluate_efficiency_parser.add_argument("--baseline", type=Path, required=True)
+    evaluate_efficiency_parser.add_argument("--candidate", type=Path, required=True)
+    evaluate_efficiency_parser.add_argument(
+        "--output", type=Path, default=Path("runtime/efficiency-report.json")
+    )
+    state_parser = subcommands.add_parser(
+        "state", help="Encrypt and restore private workflow state"
+    )
+    state_commands = state_parser.add_subparsers(dest="state_command", required=True)
+    state_encrypt_parser = state_commands.add_parser(
+        "encrypt", help="Encrypt validated state files into one bundle"
+    )
+    state_encrypt_parser.add_argument("--input-dir", type=Path, default=Path("runtime"))
+    state_encrypt_parser.add_argument("--output", type=Path, default=Path("runtime/state.enc.json"))
+    state_decrypt_parser = state_commands.add_parser(
+        "decrypt", help="Decrypt and validate one private state bundle"
+    )
+    state_decrypt_parser.add_argument("--input", type=Path, required=True)
+    state_decrypt_parser.add_argument("--output-dir", type=Path, default=Path("runtime"))
     ranking_parser = subcommands.add_parser(
         "ranking", help="Manage local immutable ranking weight-set versions"
     )
@@ -412,6 +445,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             print(
                 f"public evidence enriched: {len(evidence)} candidates, {available} context records"
             )
+            return 0
+        if args.command == "state":
+            if not config.state_encryption_key:
+                raise ApplicationError(
+                    "set ZAD_STATE_ENCRYPTION_KEY before handling workflow state"
+                )
+            if args.state_command == "encrypt":
+                encrypt_state_directory(args.input_dir, args.output, config.state_encryption_key)
+                print(f"encrypted workflow state: {args.output}")
+                return 0
+            if args.state_command == "decrypt":
+                files = decrypt_state_bundle(
+                    args.input, args.output_dir, config.state_encryption_key
+                )
+                print(f"decrypted workflow state: {len(files)} files")
+                return 0
+        if args.command == "evaluate" and args.evaluate_command == "record-manifest":
+            count = record_manifest(args.input, args.history)
+            print(f"run manifest recorded: {count} entries")
+            return 0
+        if args.command == "evaluate" and args.evaluate_command == "efficiency":
+            comparison = compare_manifest_files(args.baseline, args.candidate, args.output)
+            state = "eligible" if comparison.comparable else "blocked"
+            print(f"efficiency comparison written: {state}")
             return 0
         if args.command == "evaluate" and args.evaluate_command == "snapshot":
             created_at = datetime.now(UTC)

@@ -17,13 +17,16 @@ from zotero_arxiv_daily.llm.cache import ProposalCache
 from zotero_arxiv_daily.llm.contracts import (
     Explanation,
     JudgeAssessment,
+    ProviderCompletion,
     parse_explanations,
     parse_judgments,
 )
 
 
 class StructuredProvider(Protocol):
-    def complete(self, contract: str, records: list[dict[str, object]]) -> str: ...
+    def complete(
+        self, contract: str, records: list[dict[str, object]]
+    ) -> str | ProviderCompletion: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,6 +36,9 @@ class RefinementUsage:
     estimated_input_tokens: int
     estimated_output_tokens: int
     retry_count: int = 0
+    actual_input_tokens: int | None = None
+    actual_output_tokens: int | None = None
+    latency_seconds: float | None = None
 
 
 def run_judgments(
@@ -141,13 +147,17 @@ def _run[T: JudgeAssessment | Explanation](
     retries_used = 0
     input_tokens = 0
     output_tokens = 0
+    actual_input: list[int] = []
+    actual_output: list[int] = []
+    latencies: list[float] = []
     for batch in batches:
         batch_ids = frozenset(str(record["arxiv_id"]) for record in batch)
         batch_input_tokens = _tokens(batch)
         for attempt in range(retries + 1):
             requests += 1
             try:
-                payload = provider.complete(contract, list(batch))
+                response = provider.complete(contract, list(batch))
+                payload = response.content if isinstance(response, ProviderCompletion) else response
                 fresh = _parse(parser, payload, batch_ids)
             except (ExternalServiceError, IndexError) as error:
                 if attempt == retries:
@@ -159,6 +169,13 @@ def _run[T: JudgeAssessment | Explanation](
             fresh_values.extend(fresh)
             input_tokens += batch_input_tokens
             output_tokens += _tokens(json.loads(payload))
+            if isinstance(response, ProviderCompletion):
+                if response.input_tokens is not None:
+                    actual_input.append(response.input_tokens)
+                if response.output_tokens is not None:
+                    actual_output.append(response.output_tokens)
+                if response.latency_seconds is not None:
+                    latencies.append(response.latency_seconds)
             break
     fresh = tuple(fresh_values)
     if frozenset(value.arxiv_id for value in cached + list(fresh)) != identifiers or len(
@@ -177,6 +194,9 @@ def _run[T: JudgeAssessment | Explanation](
             input_tokens,
             output_tokens,
             retries_used,
+            sum(actual_input) if len(actual_input) == len(batches) else None,
+            sum(actual_output) if len(actual_output) == len(batches) else None,
+            sum(latencies) if latencies else None,
         ),
     )
 

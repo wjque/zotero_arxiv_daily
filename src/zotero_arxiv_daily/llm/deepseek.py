@@ -6,11 +6,13 @@ import json
 import socket
 import ssl
 from dataclasses import dataclass
+from time import perf_counter
 from typing import Protocol, cast
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from zotero_arxiv_daily.core.errors import ExternalServiceError
+from zotero_arxiv_daily.llm.contracts import ProviderCompletion
 
 _MAX_RESPONSE_BYTES = 2 * 1024 * 1024
 _SYSTEM_PROMPT = (
@@ -102,7 +104,7 @@ class DeepSeekClient:
     output_language: str = "en"
     max_output_tokens: int = 12_000
 
-    def propose(self, candidates: list[dict[str, object]]) -> str:
+    def propose(self, candidates: list[dict[str, object]]) -> ProviderCompletion:
         """Request JSON only; quoted candidate data cannot modify system instructions."""
 
         payload = json.dumps(
@@ -120,15 +122,16 @@ class DeepSeekClient:
                 ],
             }
         ).encode("utf-8")
+        started = perf_counter()
         response = (self.transport or UrlLibJsonTransport()).post(
             self.endpoint,
             {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             payload,
             self.timeout_seconds,
         )
-        return _completion_content(response)
+        return _completion_result(response, perf_counter() - started)
 
-    def complete(self, contract: str, records: list[dict[str, object]]) -> str:
+    def complete(self, contract: str, records: list[dict[str, object]]) -> ProviderCompletion:
         """Execute a versioned structured contract over only caller-allowlisted records."""
 
         match contract:
@@ -150,16 +153,17 @@ class DeepSeekClient:
                 ],
             }
         ).encode("utf-8")
+        started = perf_counter()
         response = (self.transport or UrlLibJsonTransport()).post(
             self.endpoint,
             {"Authorization": f"Bearer {self.api_key}", "Content-Type": "application/json"},
             payload,
             self.timeout_seconds,
         )
-        return _completion_content(response)
+        return _completion_result(response, perf_counter() - started)
 
 
-def _completion_content(response: str) -> str:
+def _completion_result(response: str, latency_seconds: float) -> ProviderCompletion:
     try:
         value = json.loads(response)
         content = value["choices"][0]["message"]["content"]
@@ -169,4 +173,21 @@ def _completion_content(response: str) -> str:
         raise ExternalServiceError("DeepSeek completion content is invalid")
     if not content.strip():
         raise ExternalServiceError("DeepSeek returned empty completion content")
-    return content
+    usage = value.get("usage")
+    input_tokens, output_tokens = _usage_tokens(usage)
+    return ProviderCompletion(content, input_tokens, output_tokens, latency_seconds)
+
+
+def _usage_tokens(value: object) -> tuple[int | None, int | None]:
+    if value is None:
+        return None, None
+    if not isinstance(value, dict):
+        raise ExternalServiceError("DeepSeek usage metadata is invalid")
+    input_tokens = value.get("prompt_tokens", value.get("input_tokens"))
+    output_tokens = value.get("completion_tokens", value.get("output_tokens"))
+    for token_count in (input_tokens, output_tokens):
+        if token_count is not None and (
+            not isinstance(token_count, int) or isinstance(token_count, bool) or token_count < 0
+        ):
+            raise ExternalServiceError("DeepSeek usage token count is invalid")
+    return input_tokens, output_tokens

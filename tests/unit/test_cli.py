@@ -50,6 +50,35 @@ def test_site_build_command_uses_protected_output_by_default(
     assert (output_path / "data/recommendations.enc.json").is_file()
 
 
+def test_state_commands_round_trip_validated_private_workflow_state(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], tmp_path: Path
+) -> None:
+    source = tmp_path / "state-source"
+    source.mkdir()
+    for name, value in {
+        "arxiv-state.json": {"schema_version": 3, "candidates": []},
+        "feedback-state.json": {"schema_version": 2, "events": []},
+        "recommendation-history.json": {"schema_version": 1, "records": []},
+    }.items():
+        (source / name).write_text(json.dumps(value), encoding="utf-8")
+    bundle = tmp_path / "state.enc.json"
+    restored = tmp_path / "restored"
+    monkeypatch.setattr(
+        cli, "load_config", lambda **_: AppConfig(state_encryption_key="state-test-key-1234")
+    )
+
+    assert cli.main(["state", "encrypt", "--input-dir", str(source), "--output", str(bundle)]) == 0
+    assert (
+        cli.main(["state", "decrypt", "--input", str(bundle), "--output-dir", str(restored)]) == 0
+    )
+
+    assert "encrypted workflow state" in capsys.readouterr().out
+    assert json.loads((restored / "feedback-state.json").read_text(encoding="utf-8")) == {
+        "schema_version": 2,
+        "events": [],
+    }
+
+
 def test_recommend_command_records_candidate_pool_degradation_in_manifest(
     monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:

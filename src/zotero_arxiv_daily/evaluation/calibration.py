@@ -195,12 +195,12 @@ def _ablation(
 def _append_coarse_recall_gate(
     reasons: list[str], warnings: list[str], baseline: RankingMetrics, candidate: RankingMetrics
 ) -> None:
-    if candidate.recall_at_k is None or baseline.recall_at_k is None:
-        warnings.append("coarse Recall@60 is unavailable")
+    if candidate.candidate_recall_at_k is None or baseline.candidate_recall_at_k is None:
+        warnings.append("coarse candidate-conditional Recall@60 is unavailable")
         return
-    if candidate.recall_at_k < baseline.recall_at_k:
+    if candidate.candidate_recall_at_k < baseline.candidate_recall_at_k:
         reasons.append("coarse Recall@60 regressed from the frozen baseline")
-    if candidate.recall_at_k < 0.95:
+    if candidate.candidate_recall_at_k < 0.95:
         warnings.append("coarse Recall@60 is below the 95% labeled-relevant target")
 
 

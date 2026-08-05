@@ -7,6 +7,7 @@ from pathlib import Path
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate, ArxivId
 from zotero_arxiv_daily.llm.cache import ProposalCache
+from zotero_arxiv_daily.llm.contracts import ProviderCompletion
 from zotero_arxiv_daily.pipeline.recommend import (
     package_result,
     run_recommendation,
@@ -122,6 +123,12 @@ class _RefinementProvider:
                 ]
             }
         )
+
+
+class _MeasuredRefinementProvider(_RefinementProvider):
+    def complete(self, contract: str, records: list[dict[str, object]]) -> ProviderCompletion:
+        response = super().complete(contract, records)
+        return ProviderCompletion(response, input_tokens=100, output_tokens=20, latency_seconds=0.5)
 
 
 def test_fully_suppressed_input_creates_empty_batch_without_model_call(tmp_path: Path) -> None:
@@ -312,3 +319,34 @@ def test_refined_run_judges_shortlist_and_generates_final_only_explanations(tmp_
         "explain-v1",
     ]
     assert all("relevance_signals" in record for record in provider.calls[-1][1])
+
+
+def test_refined_manifest_records_measured_usage_and_context_mode(tmp_path: Path) -> None:
+    profile = RemoteProfile(4, 9, ("learning",), ("cs.LG",), (), ())
+    provider = _MeasuredRefinementProvider()
+    now = datetime(2026, 8, 1, tzinfo=UTC)
+    candidates = tuple(
+        replace(
+            _candidate(f"2401.{index:05d}"),
+            title=f"Learning topic {index}",
+            authors=(f"Author {index}",),
+        )
+        for index in range(1, 4)
+    )
+
+    _, manifest = run_refined_recommendation(
+        candidates,
+        profile,
+        now,
+        provider,
+        ProposalCache(tmp_path / "measured-cache.json"),
+        model="deepseek-v4-flash",
+        output_language="en",
+        allow_preference_context=True,
+        completed_at=now,
+    )
+
+    assert manifest.actual_input_tokens == 200
+    assert manifest.actual_output_tokens == 40
+    assert manifest.provider_latency_seconds == 1.0
+    assert manifest.preference_context_enabled

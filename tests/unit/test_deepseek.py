@@ -77,6 +77,26 @@ def test_deepseek_structured_contract_uses_only_caller_supplied_records() -> Non
         DeepSeekClient("test-key", transport=transport).complete("other", [])
 
 
+def test_deepseek_adapter_preserves_provider_usage_metadata() -> None:
+    class UsageTransport(_Transport):
+        def post(
+            self, url: str, headers: dict[str, str], payload: bytes, timeout_seconds: float
+        ) -> str:
+            return json.dumps(
+                {
+                    "choices": [{"message": {"content": '{"proposals":[]}'}}],
+                    "usage": {"prompt_tokens": 12, "completion_tokens": 7},
+                }
+            )
+
+    completion = DeepSeekClient("test-key", transport=UsageTransport()).propose([])
+
+    assert completion.content == '{"proposals":[]}'
+    assert completion.input_tokens == 12
+    assert completion.output_tokens == 7
+    assert completion.latency_seconds is not None
+
+
 @pytest.mark.parametrize(
     ("status_code", "message"),
     [
