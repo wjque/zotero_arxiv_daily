@@ -82,11 +82,11 @@ class AppConfig:
     ranking_weight_state_path: str = "runtime/ranking-weights.json"
     llm_refinement_enabled: bool = False
     llm_preference_context_approved: bool = False
-    llm_judge_batch_size: int = 40
-    llm_explanation_batch_size: int = 20
+    llm_judge_batch_size: int = 20
+    llm_explanation_batch_size: int = 10
     llm_request_token_limit: int = 12_000
     llm_request_byte_limit: int = 65_536
-    llm_max_requests: int = 4
+    llm_max_requests: int = 8
     llm_retries: int = 1
     llm_max_output_tokens: int = 12_000
 

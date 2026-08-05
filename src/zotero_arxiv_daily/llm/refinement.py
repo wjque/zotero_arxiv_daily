@@ -213,9 +213,9 @@ def _parse[T](
     try:
         value = json.loads(payload)
     except json.JSONDecodeError as error:
-        raise ExternalServiceError("cached refinement payload is invalid") from error
+        raise ExternalServiceError("refinement response is invalid JSON") from error
     if not isinstance(value, dict) or len(value) != 1:
-        raise ExternalServiceError("cached refinement payload is invalid")
+        raise ExternalServiceError("refinement response must contain one contract field")
     return parser(payload, identifiers)
 
 
