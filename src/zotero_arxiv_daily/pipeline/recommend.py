@@ -305,11 +305,11 @@ def run_refined_recommendation(
     weight_set: WeightSet = DEFAULT_WEIGHT_SET,
     allow_preference_context: bool = False,
     completed_at: datetime | None = None,
-    judge_batch_size: int = 40,
-    explanation_batch_size: int = 20,
+    judge_batch_size: int = 20,
+    explanation_batch_size: int = 10,
     max_request_tokens: int = DEFAULT_REQUEST_TOKEN_LIMIT,
     max_request_bytes: int = DEFAULT_REQUEST_BYTE_LIMIT,
-    max_requests: int = 4,
+    max_requests: int = 8,
     retries: int = 1,
 ) -> tuple[RecommendationSet, RecommendationRunManifest]:
     """Run judge-v2 then final-only explain-v2 without granting model control over selection."""
