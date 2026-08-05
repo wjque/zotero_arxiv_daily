@@ -26,6 +26,8 @@ OPTIONAL_STATE_FILES = (
     "pending-recommendation-history.json",
     "run-manifest.json",
     "run-manifest-history.json",
+    "efficiency-baseline-manifest.json",
+    "efficiency-report.json",
 )
 ALLOWED_STATE_FILES = frozenset((*REQUIRED_STATE_FILES, *OPTIONAL_STATE_FILES))
 

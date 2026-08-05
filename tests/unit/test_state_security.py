@@ -31,6 +31,7 @@ def test_state_bundle_round_trip_writes_only_validated_files(tmp_path: Path) -> 
     restored = tmp_path / "restored"
     _write_required(source)
     (source / "proposal-cache.json").write_text('{"entries":[]}', encoding="utf-8")
+    (source / "efficiency-report.json").write_text('{"comparable":false}', encoding="utf-8")
     (source / "private-unrelated.json").write_text("{}", encoding="utf-8")
 
     encrypt_state_directory(source, output, "state-passphrase-1234")
@@ -38,6 +39,7 @@ def test_state_bundle_round_trip_writes_only_validated_files(tmp_path: Path) -> 
 
     assert written == (
         "arxiv-state.json",
+        "efficiency-report.json",
         "feedback-state.json",
         "proposal-cache.json",
         "recommendation-history.json",

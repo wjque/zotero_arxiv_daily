@@ -234,6 +234,12 @@ The comparison uses median input/output tokens per deployed recommendation, requ
 provider latency, duration, and measured cost. Missing actual token usage blocks comparability; the
 release target is at least a 25% median output-token reduction.
 
+Manual production acceptance can capture one private manifest as the efficiency baseline and compare
+a later candidate run without exporting protected state. The workflow summary exposes only the
+allowlisted aggregate manifest and comparison fields. A separate manual-only failure-injection input
+stops after Pages deployment so that the next run can exercise reconciliation; it must remain false
+outside that controlled rehearsal.
+
 To publish a validated exported profile to a GitHub Actions Secret, authenticate `gh` locally and
 set `ZAD_GITHUB_REPOSITORY`; the profile JSON is sent on standard input rather than in command-line
 arguments:

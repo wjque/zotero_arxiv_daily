@@ -25,6 +25,21 @@ on:
         required: false
         default: false
         type: boolean
+      capture_efficiency_baseline:
+        description: Persist this run's privacy-safe manifest as an explicit efficiency baseline
+        required: false
+        default: false
+        type: boolean
+      compare_efficiency_candidate:
+        description: Compare this run's manifest with the captured efficiency baseline
+        required: false
+        default: false
+        type: boolean
+      simulate_post_deploy_state_push_failure:
+        description: Fail after Pages deployment to exercise next-run state reconciliation
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: write
@@ -77,7 +92,7 @@ jobs:
                   test -f "runtime/state/$required" || { echo "Persisted state is missing $required" >&2; exit 1; }
                   cp "runtime/state/$required" runtime/
                 done
-                for optional in proposal-cache.json ranking-weights.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json run-manifest.json run-manifest-history.json; do
+                for optional in proposal-cache.json ranking-weights.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json run-manifest.json run-manifest-history.json efficiency-baseline-manifest.json efficiency-report.json; do
                   if test -f "runtime/state/$optional"; then cp "runtime/state/$optional" runtime/; fi
                 done
                 echo "legacy=true" >> "$GITHUB_OUTPUT"
@@ -189,7 +204,7 @@ jobs:
           git fetch --no-tags origin state
           git worktree add --detach runtime/state origin/state
           test -f runtime/state/state.enc.json
-          for plaintext_state in arxiv-state.json feedback-state.json recommendation-history.json proposal-cache.json ranking-weights.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json run-manifest.json run-manifest-history.json; do
+          for plaintext_state in arxiv-state.json feedback-state.json recommendation-history.json proposal-cache.json ranking-weights.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json run-manifest.json run-manifest-history.json efficiency-baseline-manifest.json efficiency-report.json; do
             test ! -e "runtime/state/$plaintext_state" || {
               echo "State tip still contains plaintext protected state: $plaintext_state" >&2
               exit 1
@@ -288,6 +303,52 @@ jobs:
         run: |
           set -euo pipefail
           uv run zotero-arxiv-daily evaluate record-manifest
+      - name: Capture or compare privacy-safe efficiency evidence
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        env:
+          CAPTURE_EFFICIENCY_BASELINE: ${{ inputs.capture_efficiency_baseline && 'true' || 'false' }}
+          COMPARE_EFFICIENCY_CANDIDATE: ${{ inputs.compare_efficiency_candidate && 'true' || 'false' }}
+        run: |
+          set -euo pipefail
+          if test "$CAPTURE_EFFICIENCY_BASELINE" = "true"; then
+            cp runtime/run-manifest.json runtime/efficiency-baseline-manifest.json
+          fi
+          if test "$COMPARE_EFFICIENCY_CANDIDATE" = "true"; then
+            test -f runtime/efficiency-baseline-manifest.json
+            uv run zotero-arxiv-daily evaluate efficiency \
+              --baseline runtime/efficiency-baseline-manifest.json \
+              --candidate runtime/run-manifest.json \
+              --output runtime/efficiency-report.json
+          fi
+          python - <<'PY' >> "$GITHUB_STEP_SUMMARY"
+          import json
+          from pathlib import Path
+
+          manifest = json.loads(Path("runtime/run-manifest.json").read_text(encoding="utf-8"))
+          fields = (
+              "model",
+              "candidate_count",
+              "recommendation_count",
+              "model_requests",
+              "cache_hits",
+              "actual_input_tokens",
+              "actual_output_tokens",
+              "actual_cost_usd",
+              "provider_latency_seconds",
+              "duration_seconds",
+              "preference_context_enabled",
+          )
+          print("## Privacy-safe run manifest")
+          print("```json")
+          print(json.dumps({field: manifest.get(field) for field in fields}, sort_keys=True))
+          print("```")
+          report = Path("runtime/efficiency-report.json")
+          if report.exists():
+              print("## Privacy-safe efficiency comparison")
+              print("```json")
+              print(report.read_text(encoding="utf-8"))
+              print("```")
+          PY
       - name: Prepare generated state for deployment
         if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
         env:
@@ -377,6 +438,10 @@ jobs:
           ZAD_STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}
         run: |
           set -euo pipefail
+          if [ "${{ inputs.simulate_post_deploy_state_push_failure }}" = "true" ]; then
+            echo "Simulating the post-deploy state-push failure requested for reconciliation acceptance." >&2
+            exit 1
+          fi
           uv run zotero-arxiv-daily feedback record-impressions --input runtime/publishable-recommendations.json
           uv run zotero-arxiv-daily state encrypt \
             --input-dir runtime --output runtime/state.enc.json

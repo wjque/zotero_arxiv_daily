@@ -11,6 +11,9 @@ def test_daily_workflow_guards_model_cost_and_promotes_history_after_deployment(
     assert "enable_llm_refinement" in workflow
     assert "approve_llm_preference_context" in workflow
     assert "purge_legacy_state_history" in workflow
+    assert "capture_efficiency_baseline" in workflow
+    assert "compare_efficiency_candidate" in workflow
+    assert "simulate_post_deploy_state_push_failure" in workflow
     assert (
         "ZAD_LLM_REFINEMENT_ENABLED: ${{ inputs.enable_llm_refinement && 'true' || 'false' }}"
         in workflow
@@ -33,6 +36,9 @@ def test_daily_workflow_guards_model_cost_and_promotes_history_after_deployment(
     assert "run-manifest-history.json" in workflow
     assert "cp runtime/arxiv-state.json runtime/feedback-state.json" not in workflow
     assert "evaluate record-manifest" in workflow
+    assert "Capture or compare privacy-safe efficiency evidence" in workflow
+    assert "Privacy-safe efficiency comparison" in workflow
+    assert "Simulating the post-deploy state-push failure" in workflow
 
 
 def test_daily_workflow_reconciles_a_deployed_batch_after_state_push_failure() -> None:
