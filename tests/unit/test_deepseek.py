@@ -69,6 +69,11 @@ def test_deepseek_structured_contract_uses_only_caller_supplied_records() -> Non
     assert transport.payload is not None
     request = json.loads(transport.payload)
     assert "judgments array" in request["messages"][0]["content"]
+    assert (
+        "only allowed names are title, authors, categories, published, and summary"
+        in request["messages"][0]["content"]
+    )
+    assert "at least one exact field name" in request["messages"][0]["content"]
     assert "public abstract" not in request["messages"][0]["content"]
     assert json.loads(request["messages"][1]["content"]) == {
         "records": [{"arxiv_id": "2401.00001", "summary": "public abstract"}]
