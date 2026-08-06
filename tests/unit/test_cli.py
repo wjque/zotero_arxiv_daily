@@ -153,6 +153,23 @@ def test_recommend_command_records_candidate_pool_degradation_in_manifest(
     assert manifest["candidate_pool_source_checkpoint"] == str(source_checkpoint)
 
 
+def test_recommend_parser_accepts_explicit_v012_rollback_mode() -> None:
+    args = cli.build_parser().parse_args(
+        [
+            "recommend",
+            "run",
+            "--profile",
+            "profile.json",
+            "--candidate-state",
+            "candidates.json",
+            "--ranking-mode",
+            "v0.1.2",
+        ]
+    )
+
+    assert args.ranking_mode == "v0.1.2"
+
+
 def test_corpus_list_collections_command_exposes_only_local_mapping_fields(
     monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
 ) -> None:

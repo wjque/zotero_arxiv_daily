@@ -40,8 +40,9 @@
 
 - Existing remote-profile v1-v3, feedback v1, arXiv state v1-v3, recommendation history, and
   publishable site v1-v3 remain readable through explicit adapters or migrations.
-- The frozen v0.1.2 ranker remains available as the default rollback path until the v0.2.0
-  production canary and rollback rehearsal complete.
+- The frozen v0.1.2 ranker is available through an explicit manual workflow rollback mode while the
+  current encrypted state, schema readers, and deployment protocol remain active. Scheduled runs
+  continue to use the v0.2 path.
 
 ### Security
 

@@ -221,7 +221,11 @@ count, request count, and provider output tokens are bounded by the `ZAD_LLM_*` 
 `.env.example`.
 
 The explicit non-refinement fallback uses `proposal-v2` with the same factual grounding rules and a
-new cache namespace; the frozen v0.1.2 baseline remains available only for comparison.
+new cache namespace. It is not a v0.1.2 rollback. For a production rollback rehearsal, manually run
+the daily workflow with `use_v012_ranking=true`; this applies the frozen v0.1.2 scoring, quotas,
+diversity, proposal prompt, and final ordering while retaining the current encrypted state and Pages
+protocols. Confirm `weight_set_version` is `v0.1.2`, then restore production with another manual run
+using the default `use_v012_ranking=false` and confirm `weight_set_version` is `coarse-v1`.
 
 To make a real held-out overlap measurable, hydrate an evaluation-only candidate state from exact
 identities in a frozen snapshot. This never adds labeled papers to production retrieval:

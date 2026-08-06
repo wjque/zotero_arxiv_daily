@@ -15,6 +15,11 @@ on:
         required: false
         default: true
         type: boolean
+      use_v012_ranking:
+        description: Rehearse the frozen v0.1.2 ranker through current encrypted production state
+        required: false
+        default: false
+        type: boolean
       approve_llm_preference_context:
         description: Send the audited categorical preference context during this manual canary
         required: false
@@ -290,11 +295,15 @@ jobs:
           ZAD_LLM_PREFERENCE_CONTEXT_APPROVED: ${{ inputs.approve_llm_preference_context && 'true' || 'false' }}
         run: |
           mkdir -p runtime
+          ranking_arguments=()
+          if [ "${{ inputs.use_v012_ranking }}" = "true" ]; then
+            ranking_arguments+=(--ranking-mode v0.1.2)
+          fi
           printf '%s' "$REMOTE_PROFILE" > runtime/remote-profile.json
           gh issue list --repo "$GITHUB_REPOSITORY" --label zotero-feedback --state open --json number,body > runtime/issues.json
           uv run zotero-arxiv-daily feedback ingest --input runtime/issues.json
           uv run zotero-arxiv-daily arxiv retrieve --profile runtime/remote-profile.json --state runtime/arxiv-state.json
-          ZAD_DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" uv run zotero-arxiv-daily recommend run --profile runtime/remote-profile.json --candidate-state runtime/arxiv-state.json --workflow-run-id "${{ github.run_id }}" --workflow-run-attempt "${{ github.run_attempt }}" --source-revision "${{ github.sha }}"
+          ZAD_DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY" uv run zotero-arxiv-daily recommend run --profile runtime/remote-profile.json --candidate-state runtime/arxiv-state.json --workflow-run-id "${{ github.run_id }}" --workflow-run-attempt "${{ github.run_attempt }}" --source-revision "${{ github.sha }}" "${ranking_arguments[@]}"
           ZAD_PAGES_PASSPHRASE="$PAGES_PASSPHRASE" uv run zotero-arxiv-daily site build
           uv run python scripts/check_artifacts.py
       - name: Record privacy-safe run manifest
@@ -337,6 +346,7 @@ jobs:
               "provider_latency_seconds",
               "duration_seconds",
               "preference_context_enabled",
+              "weight_set_version",
           )
           print("## Privacy-safe run manifest")
           print("```json")

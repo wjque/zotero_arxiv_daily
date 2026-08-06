@@ -38,7 +38,11 @@ from zotero_arxiv_daily.feedback.ingest import FeedbackStateStore, read_github_i
 from zotero_arxiv_daily.feedback.ledger import FeedbackLedgerStore
 from zotero_arxiv_daily.llm.cache import ProposalCache
 from zotero_arxiv_daily.llm.deepseek import DeepSeekClient
-from zotero_arxiv_daily.pipeline.recommend import run_recommendation, run_refined_recommendation
+from zotero_arxiv_daily.pipeline.recommend import (
+    run_baseline_recommendation,
+    run_recommendation,
+    run_refined_recommendation,
+)
 from zotero_arxiv_daily.profile.export import write_remote_profile
 from zotero_arxiv_daily.profile.models import WatchedIdentity
 from zotero_arxiv_daily.profile.service import (
@@ -298,6 +302,12 @@ def build_parser() -> argparse.ArgumentParser:
     recommend_run_parser.add_argument("--workflow-run-id", type=int)
     recommend_run_parser.add_argument("--workflow-run-attempt", type=int)
     recommend_run_parser.add_argument("--source-revision")
+    recommend_run_parser.add_argument(
+        "--ranking-mode",
+        choices=("v0.2", "v0.1.2"),
+        default="v0.2",
+        help="Select the current ranker or the explicit v0.1.2 rollback path",
+    )
     return parser
 
 
@@ -563,15 +573,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             weight_set = weight_registry.active()
             candidate_store = ArxivStateStore(args.candidate_state)
             candidates = candidate_store.candidates()
+            baseline_mode = args.ranking_mode == "v0.1.2"
+            if baseline_mode and config.llm_preference_context_approved:
+                raise ApplicationError("v0.1.2 rollback cannot use LLM preference context")
             provider = DeepSeekClient(
                 config.deepseek_api_key,
                 timeout_seconds=config.deepseek_timeout_seconds,
                 output_language=config.output_language,
                 max_output_tokens=config.llm_max_output_tokens,
-                proposal_prompt_version="proposal-v2",
+                proposal_prompt_version="baseline-v1" if baseline_mode else "proposal-v2",
             )
             excluded_ids = history.excluded_ids(started_at, config.recommendation_suppression_days)
-            if config.llm_refinement_enabled:
+            if baseline_mode:
+                recommendation_set, manifest = run_baseline_recommendation(
+                    candidates,
+                    profile,
+                    started_at,
+                    provider,
+                    ProposalCache(args.cache),
+                    model="deepseek-v4-flash",
+                    prompt_version=f"recommendation-v2:{config.output_language.casefold()}",
+                    excluded_ids=excluded_ids,
+                    pre_rank_limit=config.recommendation_candidate_limit,
+                    author_bonus=config.author_preference_bonus,
+                    institution_bonus=config.institution_preference_bonus,
+                    identity_bonus_cap=config.identity_bonus_cap,
+                    batch_size=config.recommendation_candidate_limit,
+                    max_requests=2,
+                    max_request_tokens=config.llm_request_token_limit,
+                    max_request_bytes=config.llm_request_byte_limit,
+                    retries=config.llm_retries,
+                )
+            elif config.llm_refinement_enabled:
                 recommendation_set, manifest = run_refined_recommendation(
                     candidates,
                     profile,

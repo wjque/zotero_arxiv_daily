@@ -39,6 +39,12 @@ from zotero_arxiv_daily.llm.refinement import (
     run_judgments,
 )
 from zotero_arxiv_daily.profile.models import RemoteProfile
+from zotero_arxiv_daily.ranking.baseline import (
+    BASELINE_VERSION,
+    order_baseline,
+    score_baseline,
+    select_baseline,
+)
 from zotero_arxiv_daily.ranking.models import (
     RECOMMENDATION_RUN_MANIFEST_SCHEMA_VERSION,
     RECOMMENDATION_SET_SCHEMA_VERSION,
@@ -69,7 +75,6 @@ def recommend(
 ) -> tuple[RecommendationRecord, ...]:
     """Apply local policy after model validation; models cannot select URLs or state changes."""
 
-    by_id = {proposal.arxiv_id: proposal for proposal in proposals}
     selected = select_diverse(
         pre_rank(
             candidates,
@@ -81,6 +86,13 @@ def recommend(
             weight_set=weight_set,
         )
     )
+    return order_recommendations(_proposal_records(selected, proposals))
+
+
+def _proposal_records(
+    selected: tuple[ScoredCandidate, ...], proposals: tuple[ModelProposal, ...]
+) -> tuple[RecommendationRecord, ...]:
+    by_id = {proposal.arxiv_id: proposal for proposal in proposals}
     records: list[RecommendationRecord] = []
     for item in selected:
         proposal = by_id.get(item.candidate.arxiv_id.canonical)
@@ -106,7 +118,7 @@ def recommend(
                 identity_matches,
             )
         )
-    return order_recommendations(tuple(records))
+    return tuple(records)
 
 
 def package_result(
@@ -283,6 +295,113 @@ def run_recommendation(
         provider_latency_seconds=usage.latency_seconds,
         retry_count=usage.retry_count,
         weight_set_version=weight_set.version,
+    )
+
+
+def run_baseline_recommendation(
+    candidates: tuple[ArxivCandidate, ...],
+    profile: RemoteProfile,
+    now: datetime,
+    provider: ProposalProvider,
+    cache: ProposalCache,
+    *,
+    prompt_version: str,
+    model: str,
+    excluded_ids: frozenset[str] = frozenset(),
+    pre_rank_limit: int = 40,
+    estimate_cost: Callable[[int], float] | None = None,
+    author_bonus: float = 0.75,
+    institution_bonus: float = 0.5,
+    identity_bonus_cap: float = 1.0,
+    completed_at: datetime | None = None,
+    batch_size: int = 40,
+    max_requests: int = 2,
+    max_request_tokens: int = DEFAULT_REQUEST_TOKEN_LIMIT,
+    max_request_bytes: int = DEFAULT_REQUEST_BYTE_LIMIT,
+    retries: int = 1,
+) -> tuple[RecommendationSet, RecommendationRunManifest]:
+    """Run frozen v0.1.2 ranking through current safe provider and state boundaries."""
+
+    if not 1 <= pre_rank_limit <= 80:
+        raise ValueError("pre_rank_limit must be between 1 and 80")
+    started = perf_counter()
+    eligible = tuple(
+        candidate for candidate in candidates if candidate.arxiv_id.canonical not in excluded_ids
+    )
+    ranked = score_baseline(
+        eligible,
+        profile,
+        now,
+        author_bonus=author_bonus,
+        institution_bonus=institution_bonus,
+        identity_bonus_cap=identity_bonus_cap,
+    )[:pre_rank_limit]
+    selected_candidates = tuple(item.candidate for item in ranked)
+    cached, missing, cache_hits = _load_cached_proposals(
+        selected_candidates, profile, cache, prompt_version, model
+    )
+    fresh, usage = propose_bounded(
+        provider,
+        [_model_candidate(item) for item in missing],
+        batch_size=batch_size,
+        max_requests=max_requests,
+        max_tokens=max_request_tokens,
+        max_request_bytes=max_request_bytes,
+        retries=retries,
+    )
+    candidates_by_id = {candidate.arxiv_id.canonical: candidate for candidate in missing}
+    for proposal in fresh:
+        candidate = candidates_by_id[proposal.arxiv_id]
+        cache.put(
+            cache.key(
+                proposal.arxiv_id,
+                profile.source_library_version,
+                prompt_version,
+                model,
+                _candidate_fingerprint(candidate),
+            ),
+            json.dumps(asdict(proposal), ensure_ascii=False, separators=(",", ":")),
+        )
+    selected = select_baseline(
+        score_baseline(
+            selected_candidates,
+            profile,
+            now,
+            author_bonus=author_bonus,
+            institution_bonus=institution_bonus,
+            identity_bonus_cap=identity_bonus_cap,
+        )
+    )
+    records = order_baseline(_proposal_records(selected, cached + fresh))
+    duration_seconds = perf_counter() - started
+    estimated_cost_usd = estimate_cost(usage.estimated_tokens) if estimate_cost else 0.0
+    actual_tokens = (
+        usage.actual_input_tokens + usage.actual_output_tokens
+        if usage.actual_input_tokens is not None and usage.actual_output_tokens is not None
+        else None
+    )
+    return package_result(
+        records,
+        profile,
+        now,
+        model=model,
+        candidate_count=len(selected_candidates),
+        model_requests=usage.requests,
+        cache_hits=cache_hits,
+        estimated_tokens=usage.estimated_tokens,
+        estimated_cost_usd=estimated_cost_usd,
+        duration_seconds=duration_seconds,
+        completed_at=completed_at or datetime.now(UTC),
+        estimated_input_tokens=usage.estimated_tokens,
+        estimated_output_tokens=0,
+        actual_input_tokens=usage.actual_input_tokens,
+        actual_output_tokens=usage.actual_output_tokens,
+        actual_cost_usd=(
+            estimate_cost(actual_tokens) if estimate_cost and actual_tokens is not None else None
+        ),
+        provider_latency_seconds=usage.latency_seconds,
+        retry_count=usage.retry_count,
+        weight_set_version=BASELINE_VERSION,
     )
 
 

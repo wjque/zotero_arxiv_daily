@@ -11,6 +11,7 @@ from zotero_arxiv_daily.llm.cache import ProposalCache
 from zotero_arxiv_daily.llm.contracts import ProviderCompletion
 from zotero_arxiv_daily.pipeline.recommend import (
     package_result,
+    run_baseline_recommendation,
     run_recommendation,
     run_refined_recommendation,
 )
@@ -156,6 +157,28 @@ def test_fully_suppressed_input_creates_empty_batch_without_model_call(tmp_path:
 
     assert result.recommendations == ()
     assert manifest.model_requests == 0
+
+
+def test_baseline_rollback_uses_frozen_ranker_and_marks_manifest(tmp_path: Path) -> None:
+    profile = RemoteProfile(1, 9, ("learning", "methods"), ("cs.LG",), (), ())
+    now = datetime(2026, 8, 1, tzinfo=UTC)
+    provider = _Provider()
+
+    result, manifest = run_baseline_recommendation(
+        (_candidate("2401.00001"),),
+        profile,
+        now,
+        provider,
+        ProposalCache(tmp_path / "proposals.json"),
+        prompt_version="recommendation-v2:en",
+        model="deepseek-v4-flash",
+        completed_at=now,
+    )
+
+    assert [item.candidate.arxiv_id.canonical for item in result.recommendations] == ["2401.00001"]
+    assert result.recommendations[0].score > 1
+    assert manifest.weight_set_version == "v0.1.2"
+    assert manifest.model_requests == 1
 
 
 def test_recommendation_run_reuses_validated_cache_and_excludes_known_papers(
