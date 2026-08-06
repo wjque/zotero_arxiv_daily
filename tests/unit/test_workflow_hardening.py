@@ -42,6 +42,7 @@ def test_daily_workflow_guards_model_cost_and_promotes_history_after_deployment(
     assert "quality is the active canary criterion" in workflow
     assert "ranking_arguments+=(--ranking-mode v0.1.2)" in workflow
     assert "Simulating the post-deploy state-push failure" in workflow
+    assert "timeout: 1200000" in workflow
 
 
 def test_daily_workflow_reconciles_a_deployed_batch_after_state_push_failure() -> None:

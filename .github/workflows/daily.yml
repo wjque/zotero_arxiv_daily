@@ -425,6 +425,8 @@ jobs:
         if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
         id: deployment
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        with:
+          timeout: 1200000
       - name: Record deployment identity
         if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
         env:
