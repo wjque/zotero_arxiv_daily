@@ -4,9 +4,9 @@ Zotero arXiv Daily is a local-first tool that builds a compact interest profile 
 Zotero library and uses it to produce a daily arXiv reading list. Raw Zotero records,
 notes, annotations, and PDF content remain local.
 
-The v0.2.0 release candidate adds interest-based coarse screening, bounded abstract-quality and
+The v0.2.0 release adds interest-based coarse screening, bounded abstract-quality and
 project-page refinement, append-only reading feedback collection, and a backward-compatible encrypted
-site schema. Production canary and release status are tracked in the active
+site schema. Its immutable acceptance contract is the
 [v0.2.0 plan](docs/plans/v0.2.0-personalized-ranking-quality.md).
 
 ## Requirements
