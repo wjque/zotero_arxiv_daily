@@ -22,6 +22,7 @@ def test_preference_context_is_bounded_to_categorical_allowlist() -> None:
     "values",
     [
         ("private_topic_text",),
+        ("explicit_positive_feedback",),
         ("topic_overlap",) * 5,
         ("topic_overlap", "topic_overlap"),
     ],

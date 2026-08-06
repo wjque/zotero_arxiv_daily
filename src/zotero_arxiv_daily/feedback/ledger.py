@@ -1,14 +1,13 @@
-"""Append-only local feedback events and guarded weekly aggregate activation."""
+"""Append-only local feedback events and impression-aware outcome records."""
 
 from __future__ import annotations
 
 import hashlib
 import json
-import math
 import os
 import tempfile
 from dataclasses import asdict, dataclass
-from datetime import datetime, timedelta
+from datetime import datetime
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
@@ -34,14 +33,6 @@ class FeedbackOutcome(StrEnum):
     NOT_INTERESTED = "not_interested"
 
 
-_OUTCOME_WEIGHTS = {
-    FeedbackOutcome.INTERESTED: 0.25,
-    FeedbackOutcome.SAVE_FOR_LATER: 0.1,
-    FeedbackOutcome.READ: 0.05,
-    FeedbackOutcome.WORTHWHILE: 0.6,
-    FeedbackOutcome.NOT_WORTHWHILE: -0.75,
-    FeedbackOutcome.NOT_INTERESTED: -0.5,
-}
 _REASON_CODES = frozenset(
     {"topic-mismatch", "incremental", "weak-evidence", "poor-clarity", "no-practical-relevance"}
 )
@@ -77,22 +68,6 @@ class FeedbackEvent:
             code not in _REASON_CODES for code in self.reason_codes
         ):
             raise ValueError("feedback reason codes are invalid")
-
-
-@dataclass(frozen=True, slots=True)
-class FeedbackAggregate:
-    version: str
-    cutoff_at: datetime
-    event_count: int
-    independent_papers: int
-    adjustments: tuple[tuple[str, float], ...]
-
-
-@dataclass(frozen=True, slots=True)
-class ActivationResult:
-    decision: str
-    active_version: str | None
-    cutoff_at: datetime | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,45 +137,6 @@ class FeedbackLedgerStore:
         state["processed"] = sorted(known_processed | {number for number, _ in new})
         self._write(state)
         return len(new), added, len(issues) - len(new)
-
-    def activate_weekly(
-        self, now: datetime, *, interval_days: int = 7, minimum_independent_papers: int = 3
-    ) -> ActivationResult:
-        """Atomically promote one decayed aggregate, or retain the last active version safely."""
-
-        instant = require_aware_utc(now, "now")
-        if not 1 <= interval_days <= 28 or minimum_independent_papers < 1:
-            raise ValueError("weekly activation bounds are invalid")
-        state = self._state()
-        activation = state["activation"]
-        previous = activation.get("activated_at")
-        if previous is not None:
-            previous_at = datetime.fromisoformat(previous)
-            if instant < previous_at + timedelta(days=interval_days):
-                return ActivationResult("not-eligible", activation.get("active_version"), None)
-        aggregate = _aggregate(state["events"], instant)
-        if aggregate.independent_papers < minimum_independent_papers:
-            return ActivationResult("insufficient-evidence", activation.get("active_version"), None)
-        state["activation"] = {
-            "activated_at": instant.isoformat(),
-            "active_version": aggregate.version,
-            "cutoff_at": aggregate.cutoff_at.isoformat(),
-            "adjustments": dict(aggregate.adjustments),
-        }
-        self._write(state)
-        return ActivationResult("activated", aggregate.version, aggregate.cutoff_at)
-
-    def active_adjustments(self) -> dict[str, float]:
-        state = self._state()
-        raw = state["activation"].get("adjustments", {})
-        if isinstance(raw, dict) and raw:
-            return {str(key): float(value) for key, value in raw.items()}
-        legacy = state["legacy_adjustments"]
-        return (
-            {str(key): float(value) for key, value in legacy.items()}
-            if isinstance(legacy, dict)
-            else {}
-        )
 
     def position_outcomes(self) -> tuple[PositionOutcomeRate, ...]:
         """Report explicit outcomes conditional on recorded impression position only."""
@@ -329,46 +265,6 @@ class FeedbackLedgerStore:
             os.chmod(self.path, 0o600)
         finally:
             temporary.unlink(missing_ok=True)
-
-
-def _aggregate(events: tuple[FeedbackEvent, ...], cutoff: datetime) -> FeedbackAggregate:
-    latest: dict[str, FeedbackEvent] = {}
-    superseded = {
-        event.supersedes_event_id
-        for event in events
-        if event.supersedes_event_id is not None and event.occurred_at <= cutoff
-    }
-    for event in events:
-        if (
-            event.event_type is FeedbackEventType.IMPRESSION
-            or event.occurred_at > cutoff
-            or event.event_id in superseded
-        ):
-            continue
-        previous = latest.get(event.paper_id)
-        if previous is None or (event.occurred_at, event.event_id) > (
-            previous.occurred_at,
-            previous.event_id,
-        ):
-            latest[event.paper_id] = event
-    adjustments = tuple(
-        sorted(
-            (
-                paper,
-                _OUTCOME_WEIGHTS[event.outcome]
-                * math.exp(-max((cutoff - event.occurred_at).total_seconds(), 0.0) / 7_776_000),
-            )
-            for paper, event in latest.items()
-            if event.outcome is not None
-        )
-    )
-    digest = hashlib.sha256(
-        json.dumps(
-            [(paper, event.event_id) for paper, event in sorted(latest.items())],
-            separators=(",", ":"),
-        ).encode()
-    ).hexdigest()[:16]
-    return FeedbackAggregate(f"feedback-{digest}", cutoff, len(latest), len(latest), adjustments)
 
 
 def _state_events(value: dict[str, Any]) -> tuple[FeedbackEvent, ...]:

@@ -28,7 +28,7 @@ def _outcome(
     )
 
 
-def test_ledger_migrates_v1_and_activates_only_after_a_weekly_eligible_sample(
+def test_ledger_migrates_v1_without_using_or_discarding_legacy_adjustments(
     tmp_path: Path,
 ) -> None:
     path = tmp_path / "feedback.json"
@@ -47,11 +47,7 @@ def test_ledger_migrates_v1_and_activates_only_after_a_weekly_eligible_sample(
         )
     )
 
-    activated = store.activate_weekly(_NOW, minimum_independent_papers=3)
-
-    assert activated.decision == "activated"
-    assert store.active_adjustments() == {"a": 0.6, "b": -0.5, "c": 0.25}
-    assert store.activate_weekly(_NOW + timedelta(days=1)).decision == "not-eligible"
+    assert len(store.events()) == 3
     assert json.loads(path.read_text(encoding="utf-8"))["legacy_adjustments"] == {"a": 0.25}
 
 
@@ -65,8 +61,7 @@ def test_ledger_keeps_corrections_and_never_treats_impressions_as_negative(tmp_p
 
     assert store.ingest((impression, outcome, correction)) == (3, 0)
     assert store.ingest((correction,)) == (0, 1)
-    assert store.activate_weekly(_NOW, minimum_independent_papers=1).decision == "activated"
-    assert store.active_adjustments() == {"a": 0.6}
+    assert {event.event_id for event in store.events()} == {"shown", "outcome", "corrected"}
 
 
 def test_position_outcomes_only_count_explicit_outcomes_after_impressions(tmp_path: Path) -> None:

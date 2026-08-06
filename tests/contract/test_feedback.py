@@ -7,6 +7,7 @@ import pytest
 
 from zotero_arxiv_daily.core.errors import ExternalServiceError
 from zotero_arxiv_daily.feedback.ingest import FeedbackStateStore, parse_feedback
+from zotero_arxiv_daily.feedback.ledger import FeedbackLedgerStore
 
 
 def _body(action: str = "interested") -> str:
@@ -20,7 +21,7 @@ def _body(action: str = "interested") -> str:
     )
 
 
-def test_feedback_ingestion_is_idempotent_and_does_not_advance_weekly_adjustments(
+def test_feedback_ingestion_is_idempotent_and_stores_only_explicit_events(
     tmp_path: Path,
 ) -> None:
     store = FeedbackStateStore(tmp_path / "feedback.json")
@@ -30,7 +31,7 @@ def test_feedback_ingestion_is_idempotent_and_does_not_advance_weekly_adjustment
 
     assert first.action_count == 1
     assert repeated.duplicate_issues == 1
-    assert store.adjustments() == {}
+    assert len(FeedbackLedgerStore(store.path).events()) == 1
 
 
 def test_malformed_issue_cannot_advance_processed_state(tmp_path: Path) -> None:

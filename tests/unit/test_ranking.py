@@ -107,14 +107,16 @@ def test_model_output_field_order_does_not_change_validation() -> None:
         )
 
 
-def test_feedback_adjustment_is_visible_in_local_score_components() -> None:
+def test_feedback_is_not_a_v020_ranking_feature() -> None:
     profile = RemoteProfile(1, 1, ("learning",), ("cs.LG",), (), ())
     item = _candidate("2401.00001", "cs.LG", "Learning")
 
-    scored = pre_rank((item,), profile, datetime(2026, 8, 1, tzinfo=UTC), {"2401.00001": -0.5})
+    scored = pre_rank((item,), profile, datetime(2026, 8, 1, tzinfo=UTC))
 
-    assert dict(scored[0].components)["feedback"] == 0
-    assert dict(scored[0].components)["negative_feedback"] == 0.5
+    assert (
+        not {"feedback", "negative_feedback", "negative_feedback_penalty"}
+        & dict(scored[0].components).keys()
+    )
 
 
 def test_watched_identity_matches_are_exact_inspectable_and_capped() -> None:
@@ -262,7 +264,7 @@ def test_unknown_extra_evidence_is_excluded_instead_of_becoming_a_zero_score() -
                     0.0,
                     False,
                     0.0,
-                    "judge-v2",
+                    "judge-v3",
                     FeatureGroup.SCIENTIFIC_QUALITY,
                 ),
             )

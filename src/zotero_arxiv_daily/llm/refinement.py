@@ -1,4 +1,4 @@
-"""Provider-neutral, failure-atomic runners for judge-v2 and explain-v2 contracts."""
+"""Provider-neutral, failure-atomic runners for judge-v3 and explain-v2 contracts."""
 
 from __future__ import annotations
 
@@ -29,7 +29,7 @@ class StructuredProvider(Protocol):
     ) -> str | ProviderCompletion: ...
 
 
-JUDGE_CONTRACT = "judge-v2"
+JUDGE_CONTRACT = "judge-v3"
 EXPLANATION_CONTRACT = "explain-v2"
 
 

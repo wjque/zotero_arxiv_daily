@@ -51,7 +51,6 @@ def pre_rank(
     candidates: tuple[ArxivCandidate, ...],
     profile: RemoteProfile,
     now: datetime,
-    feedback_adjustments: Mapping[str, float] | None = None,
     *,
     author_bonus: float = 0.75,
     institution_bonus: float = 0.5,
@@ -72,11 +71,7 @@ def pre_rank(
         category = {"core": 1.0, "adjacent": 0.6, "exploration": 0.2}[source]
         age = max((now.astimezone(UTC) - candidate.published).total_seconds() / 86400, 0.0)
         recency = max(0.0, 1.0 - age / 14)
-        feedback_key = candidate.arxiv_id.canonical
-        has_feedback = feedback_adjustments is not None and feedback_key in feedback_adjustments
-        raw_feedback = (feedback_adjustments or {}).get(feedback_key, 0.0)
-        feedback = min(max(raw_feedback, 0.0), 1.0)
-        negative_feedback = min(max(-raw_feedback, 0.0), 1.0)
+        candidate_key = candidate.arxiv_id.canonical
         author_match = _matches_any(candidate.authors, profile.watched_authors)
         institution_match = _matches_any(candidate.affiliations, profile.watched_institutions)
         watched_author = author_bonus if author_match else 0.0
@@ -111,22 +106,6 @@ def pre_rank(
                 candidate.updated,
             ),
             NormalizedFeature(
-                "feedback",
-                feedback,
-                has_feedback,
-                1.0 if has_feedback else 0.0,
-                "feedback-v2",
-                FeatureGroup.FEEDBACK,
-            ),
-            NormalizedFeature(
-                "negative_feedback",
-                negative_feedback,
-                raw_feedback < 0,
-                1.0 if raw_feedback < 0 else 0.0,
-                "feedback-v2",
-                FeatureGroup.FEEDBACK,
-            ),
-            NormalizedFeature(
                 "identity",
                 watched_author + watched_institution,
                 bool(profile.watched_authors or profile.watched_institutions),
@@ -135,10 +114,8 @@ def pre_rank(
                 FeatureGroup.IDENTITY,
             ),
         )
-        merged_features = _merge_features(features, (extra_features or {}).get(feedback_key, ()))
-        score, group_values, group_contributions, penalty = _score_features(
-            merged_features, weight_set
-        )
+        merged_features = _merge_features(features, (extra_features or {}).get(candidate_key, ()))
+        score, group_values, group_contributions = _score_features(merged_features, weight_set)
         components = tuple((feature.name, feature.value) for feature in merged_features) + (
             ("watched_author", watched_author),
             ("watched_institution", watched_institution),
@@ -147,7 +124,6 @@ def pre_rank(
                 (f"{group.value}_contribution", value)
                 for group, value in group_contributions.items()
             ),
-            ("negative_feedback_penalty", penalty),
         )
         scored.append(
             ScoredCandidate(
@@ -285,14 +261,9 @@ def _merge_features(
 
 def _score_features(
     features: tuple[NormalizedFeature, ...], weight_set: WeightSet
-) -> tuple[float, dict[FeatureGroup, float], dict[FeatureGroup, float], float]:
+) -> tuple[float, dict[FeatureGroup, float], dict[FeatureGroup, float]]:
     by_group: dict[FeatureGroup, list[NormalizedFeature]] = {group: [] for group in FeatureGroup}
-    negative = 0.0
     for feature in features:
-        if feature.name == "negative_feedback":
-            if feature.applicable:
-                negative = max(negative, feature.value * feature.confidence)
-            continue
         if feature.applicable:
             by_group[feature.group].append(feature)
     group_values = {
@@ -304,8 +275,7 @@ def _score_features(
         for group, value in group_values.items()
         if available_weight > 0
     }
-    penalty = weight_set.negative_feedback_cap * negative
-    return max(sum(contributions.values()) - penalty, 0.0), group_values, contributions, penalty
+    return sum(contributions.values()), group_values, contributions
 
 
 def _group_value(group: FeatureGroup, features: list[NormalizedFeature]) -> float:

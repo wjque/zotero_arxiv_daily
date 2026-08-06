@@ -9,7 +9,6 @@ ALLOWED_PREFERENCE_SIGNALS = frozenset(
         "topic_overlap",
         "category_overlap",
         "preference_facet_overlap",
-        "explicit_positive_feedback",
         "watched_author",
         "watched_institution",
     }

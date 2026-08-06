@@ -17,7 +17,6 @@ _DIMENSIONS = {
     "methodological_evidence": 0.7,
     "empirical_evidence": None,
     "limitations": 0.4,
-    "reproducibility": None,
 }
 
 

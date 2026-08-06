@@ -4,8 +4,8 @@ Zotero arXiv Daily is a local-first tool that builds a compact interest profile 
 Zotero library and uses it to produce a daily arXiv reading list. Raw Zotero records,
 notes, annotations, and PDF content remain local.
 
-The v0.2.0 release candidate adds normalized personalized ranking, guarded feedback learning,
-offline shadow evaluation, efficient two-stage LLM refinement, and a backward-compatible encrypted
+The v0.2.0 release candidate adds interest-based coarse screening, bounded abstract-quality and
+project-page refinement, append-only reading feedback collection, and a backward-compatible encrypted
 site schema. Production canary and release status are tracked in the active
 [v0.2.0 plan](docs/plans/v0.2.0-personalized-ranking-quality.md).
 
@@ -162,33 +162,29 @@ of the default recommendation workflow yet, so a provider outage cannot prevent 
 using the previous usable output. OpenAlex context is restricted to citation/reference counts,
 open-access state, and retraction state; it is a weak contextual input, never a direct quality score.
 
-GitHub repository facts are available only through the internal adapter after an independently
-verified paper-to-repository association exists. The adapter refuses to search for or infer a
-repository from paper metadata, reads only bounded structured repository metadata, and never fetches
-README text or source files. Missing repositories remain `unknown` or `inapplicable`; they do not
-penalize theoretical or non-software work.
+The default refined path separately checks a bounded set of approved HTTPS project-page URLs that are
+explicitly present in each public abstract. It follows only revalidated approved redirects, caches the
+result for one day, and does not retain page content. A reachable page is a positive open-source proxy,
+not proof that code or a license exists. Missing, rejected, unreachable, or timed-out pages never
+penalize a paper or block the batch.
 
-## Feedback activation cadence
+## Feedback collection
 
-Browser feedback is imported as local append-only events. It can be collected on every scheduled
-run, while ranking adjustments activate only after a guarded weekly evaluation (seven days by
-default). The previous successful snapshot remains active after empty, insufficient, or failed
-weeks. `ZAD_FEEDBACK_ACTIVATION_INTERVAL_DAYS` and `ZAD_FEEDBACK_MINIMUM_INDEPENDENT_PAPERS` adjust
-the local operational bounds; no feedback prose is sent through GitHub Issues or published output.
+Browser feedback is imported as local append-only per-paper events on every scheduled run. Successful
+publication impressions are stored with display positions so later versions can evaluate explicit
+outcomes without treating silence as a negative label. v0.2.0 does not convert these events into
+scores, prompts, profile terms, or weight changes. No feedback prose is published or sent to the model.
 
 ## Ranking evaluation and refinement
 
 The local ranker uses an immutable, versioned weight-set registry at
 `runtime/ranking-weights.json`. The daily path creates the conservative `coarse-v1` definition if
-the registry is absent. A changed weight-set must be evaluated locally before an explicit activation;
-the registry can point back to a previously registered version without rewriting its definition.
+the registry is absent. Coarse screening consumes only interest, recency, and exact watched-author or
+watched-institution features. Fine ranking starts from that score and adds uncertainty-discounted
+`judge-v3` abstract quality plus validated project-page availability. Feedback is not a ranking input.
 
 ```bash
 uv run zotero-arxiv-daily ranking weights
-uv run zotero-arxiv-daily ranking register-weights --version coarse-v2 \
-  --interest 0.50 --recency 0.10 --feedback 0.15 --identity 0.10 \
-  --scientific-quality 0.07 --reproducibility 0.03 --context 0.05 \
-  --negative-feedback-cap 0.20
 ```
 
 Freeze the evolving local corpus before comparing the normalized ranker with the v0.1.2 baseline:
@@ -201,24 +197,23 @@ uv run zotero-arxiv-daily evaluate shadow \
   --snapshot-id SNAPSHOT_ID
 ```
 
-The ignored `runtime/shadow-report.json` contains aggregate metrics and feature-group ablations
-only. It reports raw corpus Recall, candidate-label overlap, and candidate-conditional Recall
-separately. Sparse or zero-overlap reports remain uncertainty-bearing reference results: they cannot
-authorize automatic tuning, but an explicit operator may review and approve a reversible canary.
-Shadow evaluation itself never changes feedback state or publishes a batch. Activation requires an
-eligible report for the same version:
+The ignored `runtime/shadow-report.json` contains aggregate metrics and feature-group ablations only.
+It reports raw corpus Recall, candidate-label overlap, and candidate-conditional Recall separately.
+These provisional metrics are observations for v0.2.1 and later; NDCG, negative-label rate, Recall,
+latency, token use, and cost do not approve or block v0.2.0. Shadow evaluation never changes feedback
+state or publishes a batch. Weight activation is an explicit reversible operator action:
 
 ```bash
 uv run zotero-arxiv-daily ranking activate-weights \
-  --version coarse-v2 --shadow-report runtime/shadow-report.json
+  --version coarse-v2
 ```
 
 `ZAD_LLM_REFINEMENT_ENABLED` is enabled in the production workflow and `.env.example` so quality
-assessment is the default path. The pipeline judges only the coarse shortlist with `judge-v2`,
+assessment is the default path. The pipeline judges only the coarse shortlist with `judge-v3`,
 applies local selection, and asks `explain-v2` for only the final papers. The judge uses fixed score
 anchors and uncertainty; explanations must name the problem, approach, claimed result, a concrete
 paper-specific contribution, and a limitation grounded in at least two supplied fields. Existing
-`judge-v1`/`explain-v1` cache entries are intentionally ignored. `ZAD_LLM_PREFERENCE_CONTEXT_APPROVED`
+older judge/explain cache entries are intentionally ignored. `ZAD_LLM_PREFERENCE_CONTEXT_APPROVED`
 is a separate opt-in for fixed categorical relevance signals such as `topic_overlap`; it never
 sends terms, notes, annotations, collection names, labels, or feedback prose. Do not set it without
 documenting the field-level trust-boundary approval. Batch size, request token/byte limits, retry
