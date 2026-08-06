@@ -15,7 +15,7 @@ from zotero_arxiv_daily.feedback.ledger import (
     FeedbackOutcome,
 )
 
-_ACTIONS = {"interested": 0.25, "not_interested": -0.5, "save_for_later": 0.1, "read": 0.05}
+_ACTIONS = frozenset({"interested", "not_interested", "save_for_later", "read"})
 
 
 @dataclass(frozen=True, slots=True)
@@ -33,13 +33,10 @@ class FeedbackIngestionResult:
 
 
 class FeedbackStateStore:
-    """Atomically retain processed Issue IDs and bounded per-paper rank adjustments."""
+    """Atomically retain validated per-paper feedback events and processed Issue IDs."""
 
     def __init__(self, path: Path) -> None:
         self.path = path
-
-    def adjustments(self) -> dict[str, float]:
-        return FeedbackLedgerStore(self.path).active_adjustments()
 
     def ingest(self, issues: tuple[tuple[int, str], ...]) -> FeedbackIngestionResult:
         """Validate all new issues before atomically marking any of them processed."""

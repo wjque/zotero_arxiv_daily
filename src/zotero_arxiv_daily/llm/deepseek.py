@@ -45,12 +45,12 @@ _JUDGE_PROMPT = (
     "Return one item for every requested arxiv_id. "
     "Each item must contain arxiv_id, dimensions, uncertainty, and evidence_fields. "
     "dimensions must contain exactly contribution_clarity, novelty, insight_plausibility, "
-    "methodological_evidence, empirical_evidence, limitations, and reproducibility. "
+    "methodological_evidence, empirical_evidence, and limitations. "
     "Score only supplied evidence: contribution_clarity is whether the claimed contribution is "
     "specific; novelty is a bounded assessment rather than a verified fact; insight_plausibility "
     "is whether the stated reasoning is supported; methodological_evidence and empirical_evidence "
-    "cover only described methods/results; limitations records material uncertainty; and "
-    "reproducibility applies only when the supplied evidence makes it relevant. Use these anchors "
+    "cover only described methods/results; and limitations records material uncertainty. "
+    "Use these anchors "
     "consistently: 0.0 means absent or contradicted, 0.25 weak, 0.5 plausible but incomplete, "
     "0.75 strong and directly supported, and 1.0 unusually complete and specific. Missing or "
     "inapplicable evidence is null, never an invented low score. Novelty must not be inferred "
@@ -169,7 +169,7 @@ class DeepSeekClient:
         """Execute a versioned structured contract over only caller-allowlisted records."""
 
         match contract:
-            case "judge-v2":
+            case "judge-v3":
                 system_prompt = _JUDGE_PROMPT
             case "explain-v2":
                 system_prompt = _EXPLAIN_PROMPT.format(language=self.output_language)

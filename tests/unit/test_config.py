@@ -12,7 +12,6 @@ def test_default_recommendation_output_language_is_english() -> None:
     config = load_config(environment={})
 
     assert config.output_language == "en"
-    assert config.feedback_activation_interval_days == 7
     assert config.llm_request_token_limit == 12_000
     assert config.llm_request_byte_limit == 65_536
     assert config.state_encryption_key is None
@@ -60,8 +59,6 @@ def test_configuration_validates_model_timeout_and_candidate_limit() -> None:
     assert config.recommendation_candidate_limit == 40
     with pytest.raises(ConfigurationError, match="candidate_limit"):
         load_config(environment={"ZAD_RECOMMENDATION_CANDIDATE_LIMIT": "39"})
-    with pytest.raises(ConfigurationError, match="feedback_activation_interval_days"):
-        load_config(environment={"ZAD_FEEDBACK_ACTIVATION_INTERVAL_DAYS": "6"})
 
 
 def test_refinement_preference_context_requires_an_explicit_enabled_refinement_path() -> None:

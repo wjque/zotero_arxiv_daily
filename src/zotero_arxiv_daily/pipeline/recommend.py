@@ -11,6 +11,11 @@ from time import perf_counter
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
 from zotero_arxiv_daily.core.errors import ExternalServiceError
+from zotero_arxiv_daily.evidence.project_page import (
+    ProjectPageClient,
+    ProjectPageEvidence,
+    inspect_project_pages,
+)
 from zotero_arxiv_daily.llm.batch import (
     DEFAULT_REQUEST_BYTE_LIMIT,
     DEFAULT_REQUEST_TOKEN_LIMIT,
@@ -34,6 +39,12 @@ from zotero_arxiv_daily.llm.refinement import (
     run_judgments,
 )
 from zotero_arxiv_daily.profile.models import RemoteProfile
+from zotero_arxiv_daily.ranking.baseline import (
+    BASELINE_VERSION,
+    order_baseline,
+    score_baseline,
+    select_baseline,
+)
 from zotero_arxiv_daily.ranking.models import (
     RECOMMENDATION_RUN_MANIFEST_SCHEMA_VERSION,
     RECOMMENDATION_SET_SCHEMA_VERSION,
@@ -60,24 +71,28 @@ def recommend(
     author_bonus: float = 0.75,
     institution_bonus: float = 0.5,
     identity_bonus_cap: float = 1.0,
-    feedback_adjustments: Mapping[str, float] | None = None,
     weight_set: WeightSet = DEFAULT_WEIGHT_SET,
 ) -> tuple[RecommendationRecord, ...]:
     """Apply local policy after model validation; models cannot select URLs or state changes."""
 
-    by_id = {proposal.arxiv_id: proposal for proposal in proposals}
     selected = select_diverse(
         pre_rank(
             candidates,
             profile,
             now,
-            feedback_adjustments,
             author_bonus=author_bonus,
             institution_bonus=institution_bonus,
             identity_bonus_cap=identity_bonus_cap,
             weight_set=weight_set,
         )
     )
+    return order_recommendations(_proposal_records(selected, proposals))
+
+
+def _proposal_records(
+    selected: tuple[ScoredCandidate, ...], proposals: tuple[ModelProposal, ...]
+) -> tuple[RecommendationRecord, ...]:
+    by_id = {proposal.arxiv_id: proposal for proposal in proposals}
     records: list[RecommendationRecord] = []
     for item in selected:
         proposal = by_id.get(item.candidate.arxiv_id.canonical)
@@ -103,7 +118,7 @@ def recommend(
                 identity_matches,
             )
         )
-    return order_recommendations(tuple(records))
+    return tuple(records)
 
 
 def package_result(
@@ -185,7 +200,6 @@ def run_recommendation(
     prompt_version: str,
     model: str,
     excluded_ids: frozenset[str] = frozenset(),
-    feedback_adjustments: dict[str, float] | None = None,
     pre_rank_limit: int = 60,
     estimate_cost: Callable[[int], float] | None = None,
     author_bonus: float = 0.75,
@@ -211,7 +225,6 @@ def run_recommendation(
         eligible,
         profile,
         now,
-        feedback_adjustments,
         author_bonus=author_bonus,
         institution_bonus=institution_bonus,
         identity_bonus_cap=identity_bonus_cap,
@@ -251,7 +264,6 @@ def run_recommendation(
         author_bonus=author_bonus,
         institution_bonus=institution_bonus,
         identity_bonus_cap=identity_bonus_cap,
-        feedback_adjustments=feedback_adjustments,
         weight_set=weight_set,
     )
     duration_seconds = perf_counter() - started
@@ -286,6 +298,113 @@ def run_recommendation(
     )
 
 
+def run_baseline_recommendation(
+    candidates: tuple[ArxivCandidate, ...],
+    profile: RemoteProfile,
+    now: datetime,
+    provider: ProposalProvider,
+    cache: ProposalCache,
+    *,
+    prompt_version: str,
+    model: str,
+    excluded_ids: frozenset[str] = frozenset(),
+    pre_rank_limit: int = 40,
+    estimate_cost: Callable[[int], float] | None = None,
+    author_bonus: float = 0.75,
+    institution_bonus: float = 0.5,
+    identity_bonus_cap: float = 1.0,
+    completed_at: datetime | None = None,
+    batch_size: int = 40,
+    max_requests: int = 2,
+    max_request_tokens: int = DEFAULT_REQUEST_TOKEN_LIMIT,
+    max_request_bytes: int = DEFAULT_REQUEST_BYTE_LIMIT,
+    retries: int = 1,
+) -> tuple[RecommendationSet, RecommendationRunManifest]:
+    """Run frozen v0.1.2 ranking through current safe provider and state boundaries."""
+
+    if not 1 <= pre_rank_limit <= 80:
+        raise ValueError("pre_rank_limit must be between 1 and 80")
+    started = perf_counter()
+    eligible = tuple(
+        candidate for candidate in candidates if candidate.arxiv_id.canonical not in excluded_ids
+    )
+    ranked = score_baseline(
+        eligible,
+        profile,
+        now,
+        author_bonus=author_bonus,
+        institution_bonus=institution_bonus,
+        identity_bonus_cap=identity_bonus_cap,
+    )[:pre_rank_limit]
+    selected_candidates = tuple(item.candidate for item in ranked)
+    cached, missing, cache_hits = _load_cached_proposals(
+        selected_candidates, profile, cache, prompt_version, model
+    )
+    fresh, usage = propose_bounded(
+        provider,
+        [_model_candidate(item) for item in missing],
+        batch_size=batch_size,
+        max_requests=max_requests,
+        max_tokens=max_request_tokens,
+        max_request_bytes=max_request_bytes,
+        retries=retries,
+    )
+    candidates_by_id = {candidate.arxiv_id.canonical: candidate for candidate in missing}
+    for proposal in fresh:
+        candidate = candidates_by_id[proposal.arxiv_id]
+        cache.put(
+            cache.key(
+                proposal.arxiv_id,
+                profile.source_library_version,
+                prompt_version,
+                model,
+                _candidate_fingerprint(candidate),
+            ),
+            json.dumps(asdict(proposal), ensure_ascii=False, separators=(",", ":")),
+        )
+    selected = select_baseline(
+        score_baseline(
+            selected_candidates,
+            profile,
+            now,
+            author_bonus=author_bonus,
+            institution_bonus=institution_bonus,
+            identity_bonus_cap=identity_bonus_cap,
+        )
+    )
+    records = order_baseline(_proposal_records(selected, cached + fresh))
+    duration_seconds = perf_counter() - started
+    estimated_cost_usd = estimate_cost(usage.estimated_tokens) if estimate_cost else 0.0
+    actual_tokens = (
+        usage.actual_input_tokens + usage.actual_output_tokens
+        if usage.actual_input_tokens is not None and usage.actual_output_tokens is not None
+        else None
+    )
+    return package_result(
+        records,
+        profile,
+        now,
+        model=model,
+        candidate_count=len(selected_candidates),
+        model_requests=usage.requests,
+        cache_hits=cache_hits,
+        estimated_tokens=usage.estimated_tokens,
+        estimated_cost_usd=estimated_cost_usd,
+        duration_seconds=duration_seconds,
+        completed_at=completed_at or datetime.now(UTC),
+        estimated_input_tokens=usage.estimated_tokens,
+        estimated_output_tokens=0,
+        actual_input_tokens=usage.actual_input_tokens,
+        actual_output_tokens=usage.actual_output_tokens,
+        actual_cost_usd=(
+            estimate_cost(actual_tokens) if estimate_cost and actual_tokens is not None else None
+        ),
+        provider_latency_seconds=usage.latency_seconds,
+        retry_count=usage.retry_count,
+        weight_set_version=BASELINE_VERSION,
+    )
+
+
 def run_refined_recommendation(
     candidates: tuple[ArxivCandidate, ...],
     profile: RemoteProfile,
@@ -296,13 +415,13 @@ def run_refined_recommendation(
     model: str,
     output_language: str,
     excluded_ids: frozenset[str] = frozenset(),
-    feedback_adjustments: Mapping[str, float] | None = None,
     pre_rank_limit: int = 60,
     estimate_cost: Callable[[int], float] | None = None,
     author_bonus: float = 0.75,
     institution_bonus: float = 0.5,
     identity_bonus_cap: float = 1.0,
     weight_set: WeightSet = DEFAULT_WEIGHT_SET,
+    project_page_client: ProjectPageClient | None = None,
     allow_preference_context: bool = False,
     completed_at: datetime | None = None,
     judge_batch_size: int = 20,
@@ -312,7 +431,7 @@ def run_refined_recommendation(
     max_requests: int = 8,
     retries: int = 1,
 ) -> tuple[RecommendationSet, RecommendationRunManifest]:
-    """Run judge-v2 then final-only explain-v2 without granting model control over selection."""
+    """Run judge-v3 then final-only explain-v2 without granting model control over selection."""
 
     if not 1 <= pre_rank_limit <= 80:
         raise ValueError("pre_rank_limit must be between 1 and 80")
@@ -324,7 +443,6 @@ def run_refined_recommendation(
         eligible,
         profile,
         now,
-        feedback_adjustments,
         author_bonus=author_bonus,
         institution_bonus=institution_bonus,
         identity_bonus_cap=identity_bonus_cap,
@@ -345,7 +463,8 @@ def run_refined_recommendation(
             completed_at=completed_at or datetime.now(UTC),
             weight_set_version=weight_set.version,
         )
-    profile_digest = _profile_digest(profile, feedback_adjustments)
+    project_pages = inspect_project_pages(shortlisted, project_page_client, cache, now)
+    profile_digest = _profile_digest(profile)
     judge_records = tuple(_judge_record(candidate) for candidate in shortlisted)
     judge_keys = _layered_keys(
         cache,
@@ -375,13 +494,13 @@ def run_refined_recommendation(
         shortlisted,
         profile,
         now,
-        feedback_adjustments,
         author_bonus=author_bonus,
         institution_bonus=institution_bonus,
         identity_bonus_cap=identity_bonus_cap,
         weight_set=weight_set,
         extra_features={
-            identifier: _assessment_features(value) for identifier, value in assessments.items()
+            identifier: _assessment_features(value, project_pages[identifier])
+            for identifier, value in assessments.items()
         },
     )
     selected = select_diverse(judged)
@@ -581,7 +700,9 @@ def _judge_record(candidate: ArxivCandidate) -> dict[str, object]:
     return _model_candidate(candidate)
 
 
-def _assessment_features(assessment: JudgeAssessment) -> tuple[NormalizedFeature, ...]:
+def _assessment_features(
+    assessment: JudgeAssessment, project_page: ProjectPageEvidence
+) -> tuple[NormalizedFeature, ...]:
     dimensions = dict(assessment.dimensions)
     quality_dimensions = (
         QualityDimension.CONTRIBUTION_CLARITY,
@@ -597,7 +718,6 @@ def _assessment_features(assessment: JudgeAssessment) -> tuple[NormalizedFeature
             quality_values.append(value)
     confidence = 1.0 - assessment.uncertainty
     quality = sum(quality_values) / len(quality_values) if quality_values else 0.0
-    reproducibility = dimensions[QualityDimension.REPRODUCIBILITY]
     return (
         NormalizedFeature(
             "judge_quality",
@@ -608,11 +728,11 @@ def _assessment_features(assessment: JudgeAssessment) -> tuple[NormalizedFeature
             FeatureGroup.SCIENTIFIC_QUALITY,
         ),
         NormalizedFeature(
-            "judge_reproducibility",
-            reproducibility if reproducibility is not None else 0.0,
-            reproducibility is not None,
-            confidence if reproducibility is not None else 0.0,
-            JUDGE_CONTRACT,
+            "accessible_project_page",
+            1.0 if project_page.supports_open_source_proxy else 0.0,
+            project_page.supports_open_source_proxy,
+            1.0 if project_page.supports_open_source_proxy else 0.0,
+            "abstract-project-page-v1",
             FeatureGroup.REPRODUCIBILITY,
         ),
     )
@@ -640,8 +760,6 @@ def _relevance_signals(item: ScoredCandidate) -> tuple[str, ...]:
         signals.append("category_overlap")
     if components.get("facet", 0.0) > 0:
         signals.append("preference_facet_overlap")
-    if components.get("feedback", 0.0) > 0:
-        signals.append("explicit_positive_feedback")
     if components.get("watched_author", 0.0) > 0:
         signals.append("watched_author")
     if components.get("watched_institution", 0.0) > 0:
@@ -699,9 +817,7 @@ def _quality_score(assessment: JudgeAssessment) -> float:
     return (sum(values) / len(values)) * confidence
 
 
-def _profile_digest(
-    profile: RemoteProfile, feedback_adjustments: Mapping[str, float] | None
-) -> str:
+def _profile_digest(profile: RemoteProfile) -> str:
     """Hash local ranking inputs for local cache invalidation without serializing them to logs."""
 
     value = {
@@ -721,7 +837,6 @@ def _profile_digest(
             (facet.kind, facet.value, facet.score, facet.confidence)
             for facet in profile.preference_facets
         ),
-        "feedback": tuple(sorted((feedback_adjustments or {}).items())),
     }
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

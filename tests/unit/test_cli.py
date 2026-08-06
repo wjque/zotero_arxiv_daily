@@ -9,7 +9,6 @@ from pytest import CaptureFixture, MonkeyPatch
 from zotero_arxiv_daily import cli
 from zotero_arxiv_daily.core.config import AppConfig
 from zotero_arxiv_daily.evidence.models import PublicPaperEvidence
-from zotero_arxiv_daily.feedback.ledger import ActivationResult
 from zotero_arxiv_daily.pipeline.recommend import package_result
 from zotero_arxiv_daily.profile.models import RemoteProfile
 from zotero_arxiv_daily.site.models import PublishedRecommendationSet, write_published_set
@@ -154,6 +153,23 @@ def test_recommend_command_records_candidate_pool_degradation_in_manifest(
     assert manifest["candidate_pool_source_checkpoint"] == str(source_checkpoint)
 
 
+def test_recommend_parser_accepts_explicit_v012_rollback_mode() -> None:
+    args = cli.build_parser().parse_args(
+        [
+            "recommend",
+            "run",
+            "--profile",
+            "profile.json",
+            "--candidate-state",
+            "candidates.json",
+            "--ranking-mode",
+            "v0.1.2",
+        ]
+    )
+
+    assert args.ranking_mode == "v0.1.2"
+
+
 def test_corpus_list_collections_command_exposes_only_local_mapping_fields(
     monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
 ) -> None:
@@ -171,27 +187,6 @@ def test_corpus_list_collections_command_exposes_only_local_mapping_fields(
 
     assert exit_code == 0
     assert capsys.readouterr().out == "POSITIVE\tCurated positives\n"
-
-
-def test_feedback_activate_uses_configured_weekly_bounds(
-    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], tmp_path: Path
-) -> None:
-    class _Ledger:
-        def __init__(self, path: Path) -> None:
-            self.path = path
-
-        def activate_weekly(
-            self, now: object, *, interval_days: int, minimum_independent_papers: int
-        ) -> ActivationResult:
-            assert interval_days == 7
-            assert minimum_independent_papers == 3
-            return ActivationResult("insufficient-evidence", None, None)
-
-    monkeypatch.setattr(cli, "load_config", lambda **_: AppConfig())
-    monkeypatch.setattr(cli, "FeedbackLedgerStore", _Ledger)
-
-    assert cli.main(["feedback", "activate", "--state", str(tmp_path / "feedback.json")]) == 0
-    assert capsys.readouterr().out == "feedback activation: insufficient-evidence\n"
 
 
 def test_evidence_enrich_keeps_the_cli_projection_public_and_bounded(
@@ -227,11 +222,10 @@ def test_evidence_enrich_keeps_the_cli_projection_public_and_bounded(
     assert capsys.readouterr().out == "public evidence enriched: 0 candidates, 0 context records\n"
 
 
-def test_weight_activation_requires_an_eligible_matching_shadow_report(
+def test_weight_activation_is_an_explicit_operator_action_without_a_metric_gate(
     monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], tmp_path: Path
 ) -> None:
     state = tmp_path / "weights.json"
-    report = tmp_path / "shadow.json"
     monkeypatch.setattr(cli, "load_config", lambda **_: AppConfig())
     register = [
         "ranking",
@@ -259,10 +253,6 @@ def test_weight_activation_requires_an_eligible_matching_shadow_report(
     ]
 
     assert cli.main(register) == 0
-    report.write_text(
-        json.dumps({"weight_set_version": "coarse-test", "eligible_for_activation": False}),
-        encoding="utf-8",
-    )
     assert (
         cli.main(
             [
@@ -272,28 +262,6 @@ def test_weight_activation_requires_an_eligible_matching_shadow_report(
                 str(state),
                 "--version",
                 "coarse-test",
-                "--shadow-report",
-                str(report),
-            ]
-        )
-        == 4
-    )
-    report.write_text(
-        json.dumps({"weight_set_version": "coarse-test", "eligible_for_activation": True}),
-        encoding="utf-8",
-    )
-
-    assert (
-        cli.main(
-            [
-                "ranking",
-                "activate-weights",
-                "--state",
-                str(state),
-                "--version",
-                "coarse-test",
-                "--shadow-report",
-                str(report),
             ]
         )
         == 0

@@ -6,10 +6,12 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate, ArxivId
+from zotero_arxiv_daily.evidence.project_page import PageResponse, ProjectPageClient
 from zotero_arxiv_daily.llm.cache import ProposalCache
 from zotero_arxiv_daily.llm.contracts import ProviderCompletion
 from zotero_arxiv_daily.pipeline.recommend import (
     package_result,
+    run_baseline_recommendation,
     run_recommendation,
     run_refined_recommendation,
 )
@@ -84,7 +86,7 @@ class _RefinementProvider:
 
     def complete(self, contract: str, records: list[dict[str, object]]) -> str:
         self.calls.append((contract, records))
-        if contract == "judge-v2":
+        if contract == "judge-v3":
             judgments = []
             for record in records:
                 score = 0.0 if record["arxiv_id"] == "2401.00004" else 0.8
@@ -98,7 +100,6 @@ class _RefinementProvider:
                             "methodological_evidence": score,
                             "empirical_evidence": None,
                             "limitations": 0.4,
-                            "reproducibility": None,
                         },
                         "uncertainty": 0.2,
                         "evidence_fields": ["title", "summary"],
@@ -125,10 +126,17 @@ class _RefinementProvider:
         )
 
 
-class _MeasuredRefinementProvider(_RefinementProvider):
+class _MeasuredRefinementProvider:
     def complete(self, contract: str, records: list[dict[str, object]]) -> ProviderCompletion:
-        response = super().complete(contract, records)
+        response = _RefinementProvider().complete(contract, records)
         return ProviderCompletion(response, input_tokens=100, output_tokens=20, latency_seconds=0.5)
+
+
+class _ReachableProjectPageTransport:
+    def fetch(self, url: str, timeout_seconds: float) -> PageResponse:
+        assert url == "https://github.com/example/project"
+        assert timeout_seconds == 5.0
+        return PageResponse(200)
 
 
 def test_fully_suppressed_input_creates_empty_batch_without_model_call(tmp_path: Path) -> None:
@@ -149,6 +157,28 @@ def test_fully_suppressed_input_creates_empty_batch_without_model_call(tmp_path:
 
     assert result.recommendations == ()
     assert manifest.model_requests == 0
+
+
+def test_baseline_rollback_uses_frozen_ranker_and_marks_manifest(tmp_path: Path) -> None:
+    profile = RemoteProfile(1, 9, ("learning", "methods"), ("cs.LG",), (), ())
+    now = datetime(2026, 8, 1, tzinfo=UTC)
+    provider = _Provider()
+
+    result, manifest = run_baseline_recommendation(
+        (_candidate("2401.00001"),),
+        profile,
+        now,
+        provider,
+        ProposalCache(tmp_path / "proposals.json"),
+        prompt_version="recommendation-v2:en",
+        model="deepseek-v4-flash",
+        completed_at=now,
+    )
+
+    assert [item.candidate.arxiv_id.canonical for item in result.recommendations] == ["2401.00001"]
+    assert result.recommendations[0].score > 1
+    assert manifest.weight_set_version == "v0.1.2"
+    assert manifest.model_requests == 1
 
 
 def test_recommendation_run_reuses_validated_cache_and_excludes_known_papers(
@@ -191,7 +221,7 @@ def test_recommendation_run_reuses_validated_cache_and_excludes_known_papers(
     assert second_manifest.cache_hits == 1
 
 
-def test_feedback_adjustment_controls_final_selection(tmp_path: Path) -> None:
+def test_v020_selection_has_no_feedback_input(tmp_path: Path) -> None:
     profile = RemoteProfile(1, 9, ("learning",), ("cs.LG",), (), ())
     provider = _Provider()
     now = datetime(2026, 8, 1, tzinfo=UTC)
@@ -212,13 +242,12 @@ def test_feedback_adjustment_controls_final_selection(tmp_path: Path) -> None:
         ProposalCache(tmp_path / "proposals.json"),
         prompt_version="v2",
         model="deepseek-v4-flash",
-        feedback_adjustments={"2401.00001": -10.0},
         pre_rank_limit=21,
     )
 
     identifiers = {item.candidate.arxiv_id.canonical for item in result.recommendations}
     assert len(identifiers) == 20
-    assert "2401.00001" not in identifiers
+    assert "2401.00001" in identifiers
 
 
 def test_candidate_revision_invalidates_cached_proposal(tmp_path: Path) -> None:
@@ -290,7 +319,7 @@ def test_refined_run_judges_shortlist_and_generates_final_only_explanations(tmp_
     )
 
     assert len(result.recommendations) == 3
-    assert [contract for contract, _ in provider.calls] == ["judge-v2", "explain-v2"]
+    assert [contract for contract, _ in provider.calls] == ["judge-v3", "explain-v2"]
     assert len(provider.calls[0][1]) == 4
     assert len(provider.calls[1][1]) == 3
     assert all("relevance_signals" not in record for record in provider.calls[1][1])
@@ -314,11 +343,43 @@ def test_refined_run_judges_shortlist_and_generates_final_only_explanations(tmp_
     )
 
     assert [contract for contract, _ in provider.calls] == [
-        "judge-v2",
+        "judge-v3",
         "explain-v2",
         "explain-v2",
     ]
     assert all("relevance_signals" in record for record in provider.calls[-1][1])
+
+
+def test_refined_ranking_adds_reachable_abstract_project_page_evidence(tmp_path: Path) -> None:
+    profile = RemoteProfile(4, 9, ("learning",), ("cs.LG",), (), ())
+    provider = _RefinementProvider()
+    now = datetime(2026, 8, 1, tzinfo=UTC)
+    without_page = replace(
+        _candidate("2401.00001"), title="Alpha learning method", authors=("Alice",)
+    )
+    with_page = replace(
+        _candidate("2401.00002"),
+        title="Beta learning method",
+        authors=("Bob",),
+        summary="Learning methods. Project: https://github.com/example/project",
+    )
+
+    result, _ = run_refined_recommendation(
+        (without_page, with_page),
+        profile,
+        now,
+        provider,
+        ProposalCache(tmp_path / "cache.json"),
+        model="deepseek-v4-flash",
+        output_language="en",
+        project_page_client=ProjectPageClient(_ReachableProjectPageTransport()),
+        completed_at=now,
+    )
+
+    assert [record.candidate.arxiv_id.canonical for record in result.recommendations] == [
+        "2401.00002",
+        "2401.00001",
+    ]
 
 
 def test_refined_manifest_records_measured_usage_and_context_mode(tmp_path: Path) -> None:

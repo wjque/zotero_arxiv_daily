@@ -6,7 +6,6 @@ import json
 import os
 import re
 import tempfile
-from collections.abc import Mapping
 from dataclasses import asdict, dataclass
 from datetime import datetime
 from pathlib import Path
@@ -65,15 +64,12 @@ def run_shadow_evaluation(
     now: datetime,
     *,
     split: str = "temporal-holdout",
-    feedback_adjustments: Mapping[str, float] | None = None,
     weight_set: WeightSet,
 ) -> ShadowReport:
     """Evaluate scoring only; this function cannot modify runtime or production state."""
 
-    baseline_ranked = _ranked(score_baseline(candidates, profile, now, feedback_adjustments))
-    candidate_ranked = _ranked(
-        pre_rank(candidates, profile, now, feedback_adjustments, weight_set=weight_set)
-    )
+    baseline_ranked = _ranked(score_baseline(candidates, profile, now))
+    candidate_ranked = _ranked(pre_rank(candidates, profile, now, weight_set=weight_set))
     baseline_at_20 = evaluate_snapshot_ranking(baseline_ranked, snapshot, split, k=20)
     candidate_at_20 = evaluate_snapshot_ranking(candidate_ranked, snapshot, split, k=20)
     baseline_at_60 = evaluate_snapshot_ranking(baseline_ranked, snapshot, split, k=60)
@@ -93,19 +89,17 @@ def run_shadow_evaluation(
             snapshot,
             now,
             split,
-            feedback_adjustments,
             weight_set,
             candidate_at_20,
         )
         for group, value in weight_set.group_weights.items()
         if value > 0
     )
-    reasons = list(comparison.reasons)
-    warnings = list(comparison.warnings)
+    warnings = [*comparison.warnings, *comparison.reasons]
     if candidate_at_20.provisional:
         warnings.append("sparse evaluation result is provisional")
-    _append_coarse_recall_gate(reasons, warnings, baseline_at_60, candidate_at_60)
-    _append_diversity_gates(reasons, baseline_at_20, candidate_at_20)
+    _append_coarse_recall_observations(warnings, baseline_at_60, candidate_at_60)
+    _append_diversity_observations(warnings, baseline_at_20, candidate_at_20)
     return ShadowReport(
         SHADOW_REPORT_SCHEMA_VERSION,
         snapshot.snapshot_id,
@@ -118,10 +112,9 @@ def run_shadow_evaluation(
         candidate_at_60,
         comparison,
         ablations,
-        # Warnings require explicit human review, but do not make a manual
-        # canary impossible. Hard metric regressions remain a blocker.
-        not reasons,
-        tuple(reasons),
+        # v0.2.0 records these provisional metrics without using them as an activation gate.
+        True,
+        (),
         tuple(warnings),
     )
 
@@ -170,7 +163,6 @@ def _ablation(
     snapshot: EvaluationSnapshot,
     now: datetime,
     split: str,
-    feedback_adjustments: Mapping[str, float] | None,
     weight_set: WeightSet,
     candidate_metrics: RankingMetrics,
 ) -> FeatureAblation:
@@ -179,7 +171,6 @@ def _ablation(
             candidates,
             profile,
             now,
-            feedback_adjustments,
             weight_set=weight_set.without(group),
         )
     )
@@ -192,29 +183,29 @@ def _ablation(
     )
 
 
-def _append_coarse_recall_gate(
-    reasons: list[str], warnings: list[str], baseline: RankingMetrics, candidate: RankingMetrics
+def _append_coarse_recall_observations(
+    warnings: list[str], baseline: RankingMetrics, candidate: RankingMetrics
 ) -> None:
     if candidate.candidate_recall_at_k is None or baseline.candidate_recall_at_k is None:
         warnings.append("coarse candidate-conditional Recall@60 is unavailable")
         return
     if candidate.candidate_recall_at_k < baseline.candidate_recall_at_k:
-        reasons.append("coarse Recall@60 regressed from the frozen baseline")
+        warnings.append("coarse Recall@60 regressed from the frozen baseline")
     if candidate.candidate_recall_at_k < 0.95:
         warnings.append("coarse Recall@60 is below the 95% labeled-relevant target")
 
 
-def _append_diversity_gates(
-    reasons: list[str], baseline: RankingMetrics, candidate: RankingMetrics
+def _append_diversity_observations(
+    warnings: list[str], baseline: RankingMetrics, candidate: RankingMetrics
 ) -> None:
     if (
         baseline.intra_list_diversity_at_k is not None
         and candidate.intra_list_diversity_at_k is not None
         and candidate.intra_list_diversity_at_k < baseline.intra_list_diversity_at_k
     ):
-        reasons.append("intra-list diversity regressed")
+        warnings.append("intra-list diversity regressed")
     if candidate.source_coverage_at_k < baseline.source_coverage_at_k:
-        reasons.append("source coverage regressed")
+        warnings.append("source coverage regressed")
 
 
 def _delta(value: float | None, reference: float | None) -> float | None:

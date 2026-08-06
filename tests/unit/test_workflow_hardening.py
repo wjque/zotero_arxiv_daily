@@ -9,6 +9,7 @@ def test_daily_workflow_guards_model_cost_and_promotes_history_after_deployment(
     assert 'cron: "30 10 * * *"' in workflow
     assert "allow_peak_generation" in workflow
     assert "enable_llm_refinement" in workflow
+    assert "use_v012_ranking" in workflow
     assert "approve_llm_preference_context" in workflow
     assert "purge_legacy_state_history" in workflow
     assert "capture_efficiency_baseline" in workflow
@@ -39,7 +40,9 @@ def test_daily_workflow_guards_model_cost_and_promotes_history_after_deployment(
     assert "Capture or compare privacy-safe efficiency evidence" in workflow
     assert "Privacy-safe efficiency comparison" in workflow
     assert "quality is the active canary criterion" in workflow
+    assert "ranking_arguments+=(--ranking-mode v0.1.2)" in workflow
     assert "Simulating the post-deploy state-push failure" in workflow
+    assert "timeout: 1200000" in workflow
 
 
 def test_daily_workflow_reconciles_a_deployed_batch_after_state_push_failure() -> None:

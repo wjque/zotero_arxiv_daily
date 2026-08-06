@@ -32,12 +32,17 @@ from zotero_arxiv_daily.evaluation.offline import (
     make_evaluation_snapshot,
 )
 from zotero_arxiv_daily.evidence.openalex import OpenAlexClient, OpenAlexEvidenceEnricher
+from zotero_arxiv_daily.evidence.project_page import ProjectPageClient, UrlLibProjectPageTransport
 from zotero_arxiv_daily.evidence.storage import EvidenceCache
 from zotero_arxiv_daily.feedback.ingest import FeedbackStateStore, read_github_issues
 from zotero_arxiv_daily.feedback.ledger import FeedbackLedgerStore
 from zotero_arxiv_daily.llm.cache import ProposalCache
 from zotero_arxiv_daily.llm.deepseek import DeepSeekClient
-from zotero_arxiv_daily.pipeline.recommend import run_recommendation, run_refined_recommendation
+from zotero_arxiv_daily.pipeline.recommend import (
+    run_baseline_recommendation,
+    run_recommendation,
+    run_refined_recommendation,
+)
 from zotero_arxiv_daily.profile.export import write_remote_profile
 from zotero_arxiv_daily.profile.models import WatchedIdentity
 from zotero_arxiv_daily.profile.service import (
@@ -125,12 +130,6 @@ def build_parser() -> argparse.ArgumentParser:
     feedback_ingest_parser.add_argument(
         "--state", type=Path, default=Path("runtime/feedback-state.json")
     )
-    feedback_activate_parser = feedback_commands.add_parser(
-        "activate", help="Atomically evaluate the next eligible weekly feedback snapshot"
-    )
-    feedback_activate_parser.add_argument(
-        "--state", type=Path, default=Path("runtime/feedback-state.json")
-    )
     feedback_impressions_parser = feedback_commands.add_parser(
         "record-impressions", help="Record successful publication exposure locally"
     )
@@ -189,9 +188,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     evaluate_shadow_parser.add_argument("--profile", type=Path, required=True)
     evaluate_shadow_parser.add_argument("--candidate-state", type=Path, required=True)
-    evaluate_shadow_parser.add_argument(
-        "--feedback-state", type=Path, default=Path("runtime/feedback-state.json")
-    )
     evaluate_shadow_parser.add_argument("--snapshot-id", required=True)
     evaluate_shadow_parser.add_argument(
         "--snapshots", type=Path, default=Path("runtime/evaluation-snapshots")
@@ -267,9 +263,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ranking_activate_parser.add_argument("--state", type=Path)
     ranking_activate_parser.add_argument("--version", required=True)
-    ranking_activate_parser.add_argument(
-        "--shadow-report", type=Path, required=True, help="Eligible local report for this version"
-    )
     arxiv_parser = subcommands.add_parser("arxiv", help="Retrieve public arXiv candidate metadata")
     arxiv_commands = arxiv_parser.add_subparsers(dest="arxiv_command", required=True)
     arxiv_retrieve_parser = arxiv_commands.add_parser(
@@ -288,9 +281,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     recommend_run_parser.add_argument("--profile", type=Path, required=True)
     recommend_run_parser.add_argument("--candidate-state", type=Path, required=True)
-    recommend_run_parser.add_argument(
-        "--feedback-state", type=Path, default=Path("runtime/feedback-state.json")
-    )
     recommend_run_parser.add_argument(
         "--cache", type=Path, default=Path("runtime/proposal-cache.json")
     )
@@ -312,6 +302,12 @@ def build_parser() -> argparse.ArgumentParser:
     recommend_run_parser.add_argument("--workflow-run-id", type=int)
     recommend_run_parser.add_argument("--workflow-run-attempt", type=int)
     recommend_run_parser.add_argument("--source-revision")
+    recommend_run_parser.add_argument(
+        "--ranking-mode",
+        choices=("v0.2", "v0.1.2"),
+        default="v0.2",
+        help="Select the current ranker or the explicit v0.1.2 rollback path",
+    )
     return parser
 
 
@@ -398,14 +394,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                 f"{feedback_result.action_count} actions, "
                 f"{feedback_result.duplicate_issues} duplicates"
             )
-            return 0
-        if args.command == "feedback" and args.feedback_command == "activate":
-            activation = FeedbackLedgerStore(args.state).activate_weekly(
-                datetime.now(UTC),
-                interval_days=config.feedback_activation_interval_days,
-                minimum_independent_papers=config.feedback_minimum_independent_papers,
-            )
-            print(f"feedback activation: {activation.decision}")
             return 0
         if args.command == "feedback" and args.feedback_command == "record-impressions":
             published = read_published_set(args.input)
@@ -508,18 +496,10 @@ def main(argv: Sequence[str] | None = None) -> int:
                 read_remote_profile(args.profile),
                 snapshot,
                 snapshot.cutoff_at,
-                feedback_adjustments=FeedbackStateStore(args.feedback_state).adjustments(),
                 weight_set=weight_registry.active(),
             )
             write_shadow_report(report, args.output)
-            gate_state = (
-                "eligible-for-manual-review"
-                if report.eligible_for_activation and report.warnings
-                else "eligible"
-                if report.eligible_for_activation
-                else "provisional-or-blocked"
-            )
-            print(f"shadow evaluation written: {gate_state}, {len(report.reasons)} gate reason(s)")
+            print(f"shadow evaluation written: observation-only, {len(report.warnings)} warning(s)")
             return 0
         if args.command == "evaluate" and args.evaluate_command == "hydrate-candidates":
             snapshot = EvaluationSnapshotStore(args.snapshots).read(args.snapshot_id)
@@ -569,16 +549,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 0
         if args.command == "ranking" and args.ranking_command == "activate-weights":
             registry = WeightSetRegistry(args.state or Path(config.ranking_weight_state_path))
-            try:
-                report = json.loads(args.shadow_report.read_text(encoding="utf-8"))
-            except (OSError, json.JSONDecodeError) as error:
-                raise ApplicationError("shadow report is unreadable") from error
-            if (
-                not isinstance(report, dict)
-                or report.get("weight_set_version") != args.version
-                or report.get("eligible_for_activation") is not True
-            ):
-                raise ApplicationError("shadow report does not approve this ranking weight set")
             active_weight = registry.activate(args.version)
             print(f"ranking weight set activated: {active_weight.version}")
             return 0
@@ -594,7 +564,6 @@ def main(argv: Sequence[str] | None = None) -> int:
             if not config.deepseek_api_key:
                 raise ApplicationError("set ZAD_DEEPSEEK_API_KEY before generating recommendations")
             profile = read_remote_profile(args.profile)
-            feedback = FeedbackStateStore(args.feedback_state)
             started_at = datetime.now(UTC)
             history = RecommendationHistoryStore(args.history)
             weight_registry = WeightSetRegistry(
@@ -604,16 +573,38 @@ def main(argv: Sequence[str] | None = None) -> int:
             weight_set = weight_registry.active()
             candidate_store = ArxivStateStore(args.candidate_state)
             candidates = candidate_store.candidates()
+            baseline_mode = args.ranking_mode == "v0.1.2"
+            if baseline_mode and config.llm_preference_context_approved:
+                raise ApplicationError("v0.1.2 rollback cannot use LLM preference context")
             provider = DeepSeekClient(
                 config.deepseek_api_key,
                 timeout_seconds=config.deepseek_timeout_seconds,
                 output_language=config.output_language,
                 max_output_tokens=config.llm_max_output_tokens,
-                proposal_prompt_version="proposal-v2",
+                proposal_prompt_version="baseline-v1" if baseline_mode else "proposal-v2",
             )
-            feedback_adjustments = feedback.adjustments()
             excluded_ids = history.excluded_ids(started_at, config.recommendation_suppression_days)
-            if config.llm_refinement_enabled:
+            if baseline_mode:
+                recommendation_set, manifest = run_baseline_recommendation(
+                    candidates,
+                    profile,
+                    started_at,
+                    provider,
+                    ProposalCache(args.cache),
+                    model="deepseek-v4-flash",
+                    prompt_version=f"recommendation-v2:{config.output_language.casefold()}",
+                    excluded_ids=excluded_ids,
+                    pre_rank_limit=config.recommendation_candidate_limit,
+                    author_bonus=config.author_preference_bonus,
+                    institution_bonus=config.institution_preference_bonus,
+                    identity_bonus_cap=config.identity_bonus_cap,
+                    batch_size=config.recommendation_candidate_limit,
+                    max_requests=2,
+                    max_request_tokens=config.llm_request_token_limit,
+                    max_request_bytes=config.llm_request_byte_limit,
+                    retries=config.llm_retries,
+                )
+            elif config.llm_refinement_enabled:
                 recommendation_set, manifest = run_refined_recommendation(
                     candidates,
                     profile,
@@ -623,13 +614,13 @@ def main(argv: Sequence[str] | None = None) -> int:
                     model="deepseek-v4-flash",
                     output_language=config.output_language,
                     allow_preference_context=config.llm_preference_context_approved,
-                    feedback_adjustments=feedback_adjustments,
                     pre_rank_limit=config.recommendation_candidate_limit,
                     excluded_ids=excluded_ids,
                     author_bonus=config.author_preference_bonus,
                     institution_bonus=config.institution_preference_bonus,
                     identity_bonus_cap=config.identity_bonus_cap,
                     weight_set=weight_set,
+                    project_page_client=ProjectPageClient(UrlLibProjectPageTransport()),
                     judge_batch_size=config.llm_judge_batch_size,
                     explanation_batch_size=config.llm_explanation_batch_size,
                     max_request_tokens=config.llm_request_token_limit,
@@ -646,7 +637,6 @@ def main(argv: Sequence[str] | None = None) -> int:
                     ProposalCache(args.cache),
                     prompt_version=f"recommendation-v3:proposal-v2:{config.output_language.casefold()}",
                     model="deepseek-v4-flash",
-                    feedback_adjustments=feedback_adjustments,
                     pre_rank_limit=config.recommendation_candidate_limit,
                     excluded_ids=excluded_ids,
                     author_bonus=config.author_preference_bonus,

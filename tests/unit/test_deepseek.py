@@ -77,7 +77,7 @@ def test_deepseek_structured_contract_uses_only_caller_supplied_records() -> Non
     transport = _Transport()
 
     DeepSeekClient("test-key", transport=transport, output_language="zh-CN").complete(
-        "judge-v2", [{"arxiv_id": "2401.00001", "summary": "public abstract"}]
+        "judge-v3", [{"arxiv_id": "2401.00001", "summary": "public abstract"}]
     )
 
     assert transport.payload is not None
@@ -88,6 +88,7 @@ def test_deepseek_structured_contract_uses_only_caller_supplied_records() -> Non
         in request["messages"][0]["content"]
     )
     assert "at least two exact field names" in request["messages"][0]["content"]
+    assert "and reproducibility" not in request["messages"][0]["content"]
     assert "public abstract" not in request["messages"][0]["content"]
     assert json.loads(request["messages"][1]["content"]) == {
         "records": [{"arxiv_id": "2401.00001", "summary": "public abstract"}]

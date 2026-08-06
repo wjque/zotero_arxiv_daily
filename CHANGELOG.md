@@ -1,18 +1,20 @@
 # Changelog
 
-## v0.2.0 - Unreleased
+## v0.2.0 - 2026-08-06
 
 ### Added
 
-- Added a versioned normalized ranker with applicability-aware features, explicit activation and
-  rollback pointers, diversity constraints, and bounded exploration.
+- Added a versioned normalized ranker with applicability-aware interest, recency, and watched-identity
+  coarse features, reversible weight pointers, diversity constraints, and bounded exploration.
 - Added local curated-corpus snapshots, baseline/shadow evaluation, calibration, candidate-label
   overlap reporting, and feature-group ablations without exposing private labels.
-- Added append-only feedback v2 with impression-aware outcome attribution, guarded weekly aggregate
-  activation, and exact v1 compatibility.
-- Added provider-neutral `judge-v2` and `explain-v2` refinement with complete-record adaptive
+- Added append-only feedback v2 with impression-aware outcome attribution and exact v1 compatibility;
+  v0.2.0 stores this evidence without applying it to ranking.
+- Added provider-neutral `judge-v3` and `explain-v2` refinement with complete-record adaptive
   batching, evidence-bound quality anchors, uncertainty, separate caches, bounded retries, and
   final-candidate-only prose generation.
+- Added bounded reachability evidence for approved project-page links explicitly supplied in public
+  abstracts as a positive-only open-source proxy.
 - Added publishable schema v4 quality, uncertainty, preference-signal, and limitation fields with
   exact v1-v3 readers and encrypted desktop/mobile browser execution tests.
 - Added provider-reported token, latency, and cost fields to private run manifests, bounded
@@ -31,13 +33,16 @@
   distinct from negative quality evidence.
 - Split raw corpus Recall from candidate-pool coverage and candidate-conditional Recall so a
   zero-overlap corpus cannot be misreported as a coarse-ranking regression.
+- Made all provisional ranking and efficiency metrics observation-only for v0.2.0; release acceptance
+  depends on the production canary's shortlist quality, privacy, reliability, and recovery checks.
 
 ### Compatibility
 
 - Existing remote-profile v1-v3, feedback v1, arXiv state v1-v3, recommendation history, and
   publishable site v1-v3 remain readable through explicit adapters or migrations.
-- The frozen v0.1.2 ranker remains available as the default rollback path until the v0.2.0
-  production canary and rollback rehearsal complete.
+- The frozen v0.1.2 ranker is available through an explicit manual workflow rollback mode while the
+  current encrypted state, schema readers, and deployment protocol remain active. Scheduled runs
+  continue to use the v0.2 path.
 
 ### Security
 

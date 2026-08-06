@@ -44,7 +44,6 @@ class QualityDimension(StrEnum):
     METHODOLOGICAL_EVIDENCE = "methodological_evidence"
     EMPIRICAL_EVIDENCE = "empirical_evidence"
     LIMITATIONS = "limitations"
-    REPRODUCIBILITY = "reproducibility"
 
 
 @dataclass(frozen=True, slots=True)
@@ -118,7 +117,7 @@ def parse_judgments(
     allowed_ids: frozenset[str],
     allowed_evidence_fields: frozenset[str],
 ) -> tuple[JudgeAssessment, ...]:
-    """Validate judge-v2 output without allowing it to introduce facts or identifiers."""
+    """Validate judge-v3 output without allowing it to introduce facts or identifiers."""
 
     entries = _entries(payload, "judgments", allowed_ids)
     expected = {"arxiv_id", "dimensions", "uncertainty", "evidence_fields"}

@@ -7,8 +7,8 @@
 
 The optional LLM preference context is a categorical projection, not a profile export. Version 1
 allows only these signal names: `topic_overlap`, `category_overlap`, `preference_facet_overlap`,
-`explicit_positive_feedback`, `watched_author`, and `watched_institution`. A request may contain at
-most four distinct signal names for one candidate.
+`watched_author`, and `watched_institution`. A request may contain at most four distinct signal names
+for one candidate. Feedback is deliberately excluded from this boundary.
 
 The projection contains no topic text, profile terms, notes, annotations, collection names, labels,
 feedback prose, author names, institution names, or scores. It is sent only to `explain-v1` after
