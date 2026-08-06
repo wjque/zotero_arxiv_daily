@@ -42,7 +42,17 @@ def test_daily_workflow_guards_model_cost_and_promotes_history_after_deployment(
     assert "quality is the active canary criterion" in workflow
     assert "ranking_arguments+=(--ranking-mode v0.1.2)" in workflow
     assert "Simulating the post-deploy state-push failure" in workflow
-    assert "timeout: 1200000" in workflow
+    assert "timeout: 1200000" not in workflow
+    assert workflow.count("timeout: 600000") == 2
+    assert "continue-on-error: true" in workflow
+    assert "Wait before retrying GitHub Pages deployment" in workflow
+    assert "run: sleep 60" in workflow
+    assert "Retry GitHub Pages deployment" in workflow
+    assert "steps.deployment.outcome == 'failure'" in workflow
+    assert "steps.deployment-retry.outcome == 'success'" in workflow
+    assert (
+        "steps.deployment.outputs.page_url || steps.deployment-retry.outputs.page_url" in workflow
+    )
 
 
 def test_daily_workflow_reconciles_a_deployed_batch_after_state_push_failure() -> None:
@@ -52,6 +62,7 @@ def test_daily_workflow_reconciles_a_deployed_batch_after_state_push_failure() -
     assert 'echo "reconcile=true" >> "$GITHUB_OUTPUT"' in workflow
     assert "pending-publishable-recommendations.json" in workflow
     assert 'gh run view "$receipt_run_id" --attempt "$receipt_attempt" --json jobs' in workflow
+    assert 'deployment_steps = {"Deploy GitHub Pages", "Retry GitHub Pages deployment"}' in workflow
     assert "Reconcile previously deployed batch" in workflow
     assert (
         "feedback record-impressions --input runtime/pending-publishable-recommendations.json"

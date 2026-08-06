@@ -154,10 +154,11 @@ jobs:
           from pathlib import Path
 
           value = json.loads(Path("runtime/prior-run.json").read_text(encoding="utf-8"))
+          deployment_steps = {"Deploy GitHub Pages", "Retry GitHub Pages deployment"}
           print(
               "true"
               if any(
-                  step.get("name") == "Deploy GitHub Pages"
+                  step.get("name") in deployment_steps
                   and step.get("conclusion") == "success"
                   for job in value.get("jobs", [])
                   for step in job.get("steps", [])
@@ -424,13 +425,23 @@ jobs:
       - name: Deploy GitHub Pages
         if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
         id: deployment
+        continue-on-error: true
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
         with:
-          timeout: 1200000
+          timeout: 600000
+      - name: Wait before retrying GitHub Pages deployment
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed' && steps.deployment.outcome == 'failure'
+        run: sleep 60
+      - name: Retry GitHub Pages deployment
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed' && steps.deployment.outcome == 'failure'
+        id: deployment-retry
+        uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
+        with:
+          timeout: 600000
       - name: Record deployment identity
-        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed' && (steps.deployment.outcome == 'success' || steps.deployment-retry.outcome == 'success')
         env:
-          DEPLOYMENT_URL: ${{ steps.deployment.outputs.page_url }}
+          DEPLOYMENT_URL: ${{ steps.deployment.outputs.page_url || steps.deployment-retry.outputs.page_url }}
           ARTIFACT_DIGEST: ${{ hashFiles('runtime/site/data/*') }}
         run: |
           set -euo pipefail
@@ -448,7 +459,7 @@ jobs:
           path.write_text(json.dumps(receipt, sort_keys=True, separators=(",", ":")), encoding="utf-8")
           PY
       - name: Persist successful run state
-        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed' && (steps.deployment.outcome == 'success' || steps.deployment-retry.outcome == 'success')
         env:
           ZAD_STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}
         run: |
