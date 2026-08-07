@@ -53,6 +53,21 @@ def test_daily_workflow_guards_model_cost_and_promotes_history_after_deployment(
     assert (
         "steps.deployment.outputs.page_url || steps.deployment-retry.outputs.page_url" in workflow
     )
+    assert (
+        workflow.count(
+            "cp runtime/recommendation-history.next.json runtime/recommendation-history.json"
+        )
+        == 1
+    )
+    promotion = workflow.index(
+        "cp runtime/recommendation-history.next.json runtime/recommendation-history.json"
+    )
+    assert workflow.index("Persist successful run state") < promotion
+    assert (
+        "steps.deployment-retry.outcome == 'success'"
+        in workflow[workflow.index("Persist successful run state") : promotion]
+    )
+    assert 'receipt["deployed_at"] = datetime.now(UTC).isoformat()' in workflow
 
 
 def test_daily_workflow_reconciles_a_deployed_batch_after_state_push_failure() -> None:
@@ -69,7 +84,37 @@ def test_daily_workflow_reconciles_a_deployed_batch_after_state_push_failure() -
         in workflow
     )
     assert '"status"] = "reconciled"' in workflow
+    assert (
+        "cp runtime/pending-recommendation-history.json runtime/recommendation-history.json"
+        in workflow
+    )
+    assert (
+        "cp runtime/pending-recommendation-history.json runtime/recommendation-history.next.json"
+        not in workflow
+    )
     assert "git -C runtime/state push origin HEAD:state" in workflow
+
+
+def test_metadata_validation_branch_cannot_publish_or_call_a_model() -> None:
+    workflow = Path(".github/workflows/daily.yml").read_text(encoding="utf-8")
+    validation = workflow.split("- name: Refresh public metadata without publication", 1)[1].split(
+        "- name: Retrieve feedback and generate static site", 1
+    )[0]
+
+    assert "arxiv retrieve" in validation
+    assert "validation record" in validation
+    assert "state encrypt" in validation
+    for forbidden in (
+        "DEEPSEEK_API_KEY",
+        "recommend run",
+        "site build",
+        "upload-pages-artifact",
+        "deploy-pages",
+        "record-impressions",
+        "recommendation-history",
+        "pending-publishable",
+    ):
+        assert forbidden not in validation
 
 
 def test_workflows_pin_node24_compatible_action_revisions() -> None:

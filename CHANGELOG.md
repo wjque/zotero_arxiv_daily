@@ -1,5 +1,39 @@
 # Changelog
 
+## v0.2.1 - Unreleased
+
+### Added
+
+- Added bounded public method, implementation/evaluation, and limitation-section extraction plus
+  graded explicitly linked GitHub implementation-material evidence without cloning or executing code.
+- Added immutable quality-reference profiles built from operator-approved structured examples and
+  explicit feedback, with encrypted protected-state persistence and reversible approval pointers.
+- Added sub-24-hour metadata-only validation runs with privacy-safe encrypted manifests and no model,
+  site build, Pages deployment, publication history, impression, or pending-state changes.
+- Added publishable schema v5 fields that report quality evidence, uncertainty, implementation
+  evidence, and bounded provenance separately while retaining v1-v4 readers.
+
+### Changed
+
+- Activated the quality-first production weights: interest `0.40`, recency `0.05`, watched identity
+  `0.10`, scientific quality `0.35`, and project/implementation evidence `0.10`.
+- Moved bounded project-page reachability into coarse screening and expanded fine screening from
+  title/abstract-only evidence to allowlisted public paper sections.
+- Made approved quality-reference use visible only through aggregate protected manifest fields;
+  source paper identities and feedback content never enter model payloads or public artifacts.
+
+### Fixed
+
+- Promoted recommendation history only after a successful Pages deployment, including deterministic
+  next-run reconciliation after a post-deployment protected-state push failure.
+
+### Compatibility and Security
+
+- Existing publishable schemas v1-v4, protected state, and the explicit v0.1.2 ranking rollback remain
+  supported. New quality and validation files are accepted only inside the AES-GCM state bundle.
+- Unavailable public evidence remains unknown rather than a negative scientific claim. Public content
+  is length bounded, treated as untrusted quoted data, and cannot introduce identifiers or URLs.
+
 ## v0.2.0 - 2026-08-06
 
 ### Added

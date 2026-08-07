@@ -4,10 +4,10 @@ Zotero arXiv Daily is a local-first tool that builds a compact interest profile 
 Zotero library and uses it to produce a daily arXiv reading list. Raw Zotero records,
 notes, annotations, and PDF content remain local.
 
-The v0.2.0 release adds interest-based coarse screening, bounded abstract-quality and
-project-page refinement, append-only reading feedback collection, and a backward-compatible encrypted
-site schema. Its immutable acceptance contract is the
-[v0.2.0 plan](docs/plans/v0.2.0-personalized-ranking-quality.md).
+The v0.2.1 release candidate adds quality-first coarse screening, bounded public paper-section and
+implementation-material evidence, approved quality-reference profiles, and safe metadata-only
+validation runs. Its immutable acceptance contract is the
+[v0.2.1 plan](docs/plans/v0.2.1-quality-first-ranking-validation.md).
 
 ## Requirements
 
@@ -162,26 +162,31 @@ of the default recommendation workflow yet, so a provider outage cannot prevent 
 using the previous usable output. OpenAlex context is restricted to citation/reference counts,
 open-access state, and retraction state; it is a weak contextual input, never a direct quality score.
 
-The default refined path separately checks a bounded set of approved HTTPS project-page URLs that are
-explicitly present in each public abstract. It follows only revalidated approved redirects, caches the
-result for one day, and does not retain page content. A reachable page is a positive open-source proxy,
-not proof that code or a license exists. Missing, rejected, unreachable, or timed-out pages never
-penalize a paper or block the batch.
+The default refined path checks a bounded set of approved HTTPS project-page URLs explicitly present
+in public abstracts. Reachability participates in coarse screening. Fine screening reads only bounded
+public method, implementation/evaluation, and limitations sections from the arXiv-derived ar5iv URL.
+For an explicitly linked, reachable GitHub repository it reads root-structure metadata only and grades
+documentation, implementation, evaluation, and declared data material separately. It never clones or
+executes code. Missing, rejected, malformed, unreachable, or timed-out evidence remains `unknown` and
+cannot block the batch or become a negative scientific claim.
 
 ## Feedback collection
 
 Browser feedback is imported as local append-only per-paper events on every scheduled run. Successful
 publication impressions are stored with display positions so later versions can evaluate explicit
-outcomes without treating silence as a negative label. v0.2.0 does not convert these events into
-scores, prompts, profile terms, or weight changes. No feedback prose is published or sent to the model.
+outcomes without treating silence as a negative label. v0.2.1 may use explicit outcomes only when an
+operator generates and approves a structured quality-reference profile. Feedback never changes
+interest topics, and no feedback prose is published or sent to the model.
 
 ## Ranking evaluation and refinement
 
 The local ranker uses an immutable, versioned weight-set registry at
-`runtime/ranking-weights.json`. The daily path creates the conservative `coarse-v1` definition if
-the registry is absent. Coarse screening consumes only interest, recency, and exact watched-author or
-watched-institution features. Fine ranking starts from that score and adds uncertainty-discounted
-`judge-v3` abstract quality plus validated project-page availability. Feedback is not a ranking input.
+`runtime/ranking-weights.json`. The daily path creates `quality-first-v1` when the registry is absent.
+Its weights are interest `0.40`, recency `0.05`, exact watched identity `0.10`, scientific quality
+`0.35`, and project/implementation evidence `0.10`. Missing groups are excluded from the applicable
+weight denominator. On first v0.2.1 publication, only the known built-in `coarse-v1` pointer migrates
+to `quality-first-v1`; an operator-activated custom version is preserved. Feedback is never a direct
+ranking input.
 
 ```bash
 uv run zotero-arxiv-daily ranking weights
@@ -199,8 +204,8 @@ uv run zotero-arxiv-daily evaluate shadow \
 
 The ignored `runtime/shadow-report.json` contains aggregate metrics and feature-group ablations only.
 It reports raw corpus Recall, candidate-label overlap, and candidate-conditional Recall separately.
-These provisional metrics are observations for v0.2.1 and later; NDCG, negative-label rate, Recall,
-latency, token use, and cost do not approve or block v0.2.0. Shadow evaluation never changes feedback
+These provisional metrics remain observations; NDCG, negative-label rate, Recall, latency, token use,
+and cost do not approve or block v0.2.1. Shadow evaluation never changes feedback
 state or publishes a batch. Weight activation is an explicit reversible operator action:
 
 ```bash
@@ -225,7 +230,22 @@ new cache namespace. It is not a v0.1.2 rollback. For a production rollback rehe
 the daily workflow with `use_v012_ranking=true`; this applies the frozen v0.1.2 scoring, quotas,
 diversity, proposal prompt, and final ordering while retaining the current encrypted state and Pages
 protocols. Confirm `weight_set_version` is `v0.1.2`, then restore production with another manual run
-using the default `use_v012_ranking=false` and confirm `weight_set_version` is `coarse-v1`.
+using the default `use_v012_ranking=false` and confirm `weight_set_version` is `quality-first-v1`.
+
+Quality references require an operator-reviewed JSON file whose examples contain only a public paper
+ID, `approved`, and allowlisted structured traits. Generation does not activate a profile; approval is
+a separate reversible action. Both the registry and feedback ledger remain encrypted workflow state:
+
+```bash
+uv run zotero-arxiv-daily quality-profile generate --examples reviewed-quality-examples.json
+uv run zotero-arxiv-daily quality-profile list
+uv run zotero-arxiv-daily quality-profile approve --version QUALITY_PROFILE_VERSION
+uv run zotero-arxiv-daily quality-profile rollback --version PRIOR_VERSION
+```
+
+The judge receives only criterion names, normalized aggregate support, and the immutable profile
+version. Source paper IDs, Zotero content, and feedback events or prose are excluded. Private run
+manifests expose only the approved version and aggregate criterion/feedback counts.
 
 To make a real held-out overlap measurable, hydrate an evaluation-only candidate state from exact
 identities in a frozen snapshot. This never adds labeled papers to production retrieval:
@@ -310,8 +330,16 @@ the absence of raw branch URLs before this irreversible history purge.
 When retrieval uses a recent validated snapshot after bounded failure, the private run manifest records
 the degraded reason and source checkpoint, and the published site marks the candidate pool as degraded.
 
-Publishable site schema v4 adds an optional model-generated limitation/uncertainty note. Readers
-retain exact v1-v3 adapters and omit the field when it is unavailable.
+If a run starts less than 24 hours after the timestamped last successful Pages deployment, the
+workflow selects `metadata-validation`. It refreshes bounded public arXiv metadata and appends an
+encrypted validation manifest with zero model requests. It does not ingest feedback, generate
+recommendations, build or upload a site, deploy Pages, promote recommendation history, record
+impressions, or create pending publication state. At exactly 24 hours, or when deployment history is
+missing or legacy-untimestamped, the normal publication path is selected.
+
+Publishable site schema v5 reports scientific quality, uncertainty, implementation-material evidence,
+and bounded provenance separately. Readers retain exact v1-v4 adapters and use explicit unknown
+defaults when the new evidence is unavailable.
 
 The `Profile snapshot` is the time of the successful local Zotero synchronization used to build
 the protected profile. Rebuild and republish the profile after upgrading to v0.2.0 to populate the

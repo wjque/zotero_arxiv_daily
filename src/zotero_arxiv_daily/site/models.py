@@ -12,7 +12,7 @@ from urllib.parse import urlparse
 from zotero_arxiv_daily.core.time import product_date, require_aware_utc
 from zotero_arxiv_daily.ranking.models import RecommendationSet
 
-PUBLISHABLE_SCHEMA_VERSION = 4
+PUBLISHABLE_SCHEMA_VERSION = 5
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _REVISION = re.compile(r"^[0-9a-fA-F]{7,64}$")
 
@@ -53,6 +53,10 @@ class PublishedRecommendation:
     preference_signals: tuple[str, ...] = ()
     limitation: str | None = None
     uncertainty: float | None = None
+    quality_evidence_fields: tuple[str, ...] = ()
+    reproducibility: float | None = None
+    reproducibility_evidence: str = "unknown"
+    evidence_provenance: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.arxiv_id.strip() or not self.title.strip() or not self.authors:
@@ -61,6 +65,37 @@ class PublishedRecommendation:
             raise ValueError("published recommendation quality must be between zero and one")
         if self.uncertainty is not None and not 0 <= self.uncertainty <= 1:
             raise ValueError("published recommendation uncertainty must be between zero and one")
+        if self.reproducibility is not None and not 0 <= self.reproducibility <= 1:
+            raise ValueError(
+                "published recommendation reproducibility must be between zero and one"
+            )
+        if self.reproducibility_evidence not in {
+            "unknown",
+            "documentation_only",
+            "implementation",
+            "implementation_and_evaluation",
+            "implementation_data_and_evaluation",
+        }:
+            raise ValueError("published recommendation reproducibility evidence is invalid")
+        allowed_evidence = {
+            "title",
+            "authors",
+            "categories",
+            "published",
+            "summary",
+            "method_evidence",
+            "evaluation_evidence",
+            "limitations_evidence",
+            "quality_reference",
+        }
+        if not set(self.quality_evidence_fields) <= allowed_evidence:
+            raise ValueError("published recommendation quality evidence fields are invalid")
+        if not set(self.evidence_provenance) <= {
+            "arxiv-metadata",
+            "ar5iv-sections-v1",
+            "github-contents-v1",
+        }:
+            raise ValueError("published recommendation evidence provenance is invalid")
         if self.quota_source not in {"core", "adjacent", "exploration"}:
             raise ValueError("published recommendation has an invalid quota source")
         if not set(self.preference_signals) <= {"watched_author", "watched_institution"}:
@@ -147,8 +182,10 @@ def read_published_set(path: Path) -> PublishedRecommendationSet:
             return _read_v2(value)
         if schema_version == 3:
             return _read_v3(value)
-        if schema_version == PUBLISHABLE_SCHEMA_VERSION:
+        if schema_version == 4:
             return _read_v4(value)
+        if schema_version == PUBLISHABLE_SCHEMA_VERSION:
+            return _read_v5(value)
         raise ValueError
     except (OSError, TypeError, ValueError, json.JSONDecodeError) as error:
         raise ValueError(f"publishable recommendation input is invalid: {path}") from error
@@ -183,6 +220,10 @@ def make_published_set(
                 record.identity_matches,
                 record.limitation,
                 record.uncertainty,
+                record.quality_evidence_fields,
+                record.reproducibility,
+                record.reproducibility_evidence,
+                record.evidence_provenance,
             )
             for record in result.recommendations
         ),
@@ -280,9 +321,39 @@ def _read_v4(value: dict[str, object]) -> PublishedRecommendationSet:
         raise ValueError
     workflow = value["workflow_run"]
     return PublishedRecommendationSet(
-        PUBLISHABLE_SCHEMA_VERSION,
+        4,
         _instant_text(value["generation_started_at"]),
         _records(value["recommendations"], version=4),
+        _optional_instant(value["generation_completed_at"]),
+        _optional_instant(value["artifact_built_at"]),
+        _positive_int(value["profile_library_version"]),
+        _optional_instant(value["profile_snapshot_at"]),
+        _positive_int(value["profile_schema_version"]),
+        _workflow_run(workflow) if workflow is not None else None,
+        _nonempty_string(value["output_language"]),
+    )
+
+
+def _read_v5(value: dict[str, object]) -> PublishedRecommendationSet:
+    fields = {
+        "schema_version",
+        "generation_started_at",
+        "generation_completed_at",
+        "artifact_built_at",
+        "profile_library_version",
+        "profile_snapshot_at",
+        "profile_schema_version",
+        "workflow_run",
+        "output_language",
+        "recommendations",
+    }
+    if set(value) != fields:
+        raise ValueError
+    workflow = value["workflow_run"]
+    return PublishedRecommendationSet(
+        PUBLISHABLE_SCHEMA_VERSION,
+        _instant_text(value["generation_started_at"]),
+        _records(value["recommendations"], version=5),
         _optional_instant(value["generation_completed_at"]),
         _optional_instant(value["artifact_built_at"]),
         _positive_int(value["profile_library_version"]),
@@ -316,7 +387,19 @@ def _published_recommendation(value: object, *, version: int) -> PublishedRecomm
     legacy_v2_fields = fields | {"confidence"}
     if version >= 2:
         legacy_v2_fields.add("preference_signals")
-    if version >= 4:
+    if version >= 5:
+        current_fields = fields | {
+            "quality",
+            "uncertainty",
+            "preference_signals",
+            "limitation",
+            "quality_evidence_fields",
+            "reproducibility",
+            "reproducibility_evidence",
+            "evidence_provenance",
+        }
+        legacy_v4_fields = current_fields
+    elif version >= 4:
         current_fields = fields | {"quality", "uncertainty", "preference_signals", "limitation"}
         legacy_v4_fields = legacy_v2_fields | {"limitation"}
         legacy_v4_fields = legacy_v4_fields | {"confidence"}
@@ -336,6 +419,12 @@ def _published_recommendation(value: object, *, version: int) -> PublishedRecomm
     is_current = "quality" in value
     quality = float(value["quality"] if is_current else value["confidence"])
     uncertainty = _optional_normalized(value["uncertainty"]) if is_current else None
+    quality_evidence_fields = _strings(value["quality_evidence_fields"]) if version >= 5 else ()
+    reproducibility = _optional_normalized(value["reproducibility"]) if version >= 5 else None
+    reproducibility_evidence = (
+        _nonempty_string(value["reproducibility_evidence"]) if version >= 5 else "unknown"
+    )
+    evidence_provenance = _strings(value["evidence_provenance"]) if version >= 5 else ()
     return PublishedRecommendation(
         _nonempty_string(value["arxiv_id"]),
         _nonempty_string(value["title"]),
@@ -351,6 +440,10 @@ def _published_recommendation(value: object, *, version: int) -> PublishedRecomm
         signals,
         limitation,
         uncertainty,
+        quality_evidence_fields,
+        reproducibility,
+        reproducibility_evidence,
+        evidence_provenance,
     )
 
 
@@ -441,6 +534,15 @@ def _record_payload(record: PublishedRecommendation, *, schema_version: int) -> 
             "limitation": record.limitation,
         }
     )
+    if schema_version >= 5:
+        payload.update(
+            {
+                "quality_evidence_fields": list(record.quality_evidence_fields),
+                "reproducibility": record.reproducibility,
+                "reproducibility_evidence": record.reproducibility_evidence,
+                "evidence_provenance": list(record.evidence_provenance),
+            }
+        )
     return payload
 
 

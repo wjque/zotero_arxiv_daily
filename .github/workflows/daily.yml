@@ -97,7 +97,7 @@ jobs:
                   test -f "runtime/state/$required" || { echo "Persisted state is missing $required" >&2; exit 1; }
                   cp "runtime/state/$required" runtime/
                 done
-                for optional in proposal-cache.json ranking-weights.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json run-manifest.json run-manifest-history.json efficiency-baseline-manifest.json efficiency-report.json; do
+                for optional in proposal-cache.json ranking-weights.json quality-profile.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json run-manifest.json run-manifest-history.json validation-manifest.json validation-manifest-history.json efficiency-baseline-manifest.json efficiency-report.json; do
                   if test -f "runtime/state/$optional"; then cp "runtime/state/$optional" runtime/; fi
                 done
                 echo "legacy=true" >> "$GITHUB_OUTPUT"
@@ -210,7 +210,7 @@ jobs:
           git fetch --no-tags origin state
           git worktree add --detach runtime/state origin/state
           test -f runtime/state/state.enc.json
-          for plaintext_state in arxiv-state.json feedback-state.json recommendation-history.json proposal-cache.json ranking-weights.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json run-manifest.json run-manifest-history.json efficiency-baseline-manifest.json efficiency-report.json; do
+          for plaintext_state in arxiv-state.json feedback-state.json recommendation-history.json proposal-cache.json ranking-weights.json quality-profile.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json run-manifest.json run-manifest-history.json validation-manifest.json validation-manifest-history.json efficiency-baseline-manifest.json efficiency-report.json; do
             test ! -e "runtime/state/$plaintext_state" || {
               echo "State tip still contains plaintext protected state: $plaintext_state" >&2
               exit 1
@@ -231,15 +231,18 @@ jobs:
         run: |
           set -euo pipefail
           uv run zotero-arxiv-daily feedback record-impressions --input runtime/pending-publishable-recommendations.json
-          cp runtime/pending-recommendation-history.json runtime/recommendation-history.next.json
+          cp runtime/pending-recommendation-history.json runtime/recommendation-history.json
+          rm -f runtime/pending-publishable-recommendations.json runtime/pending-recommendation-history.json
           python - <<'PY'
           import json
           import os
+          from datetime import UTC, datetime
           from pathlib import Path
 
           path = Path("runtime/deployment-receipt.json")
           value = json.loads(path.read_text(encoding="utf-8"))
           value["status"] = "reconciled"
+          value["deployed_at"] = datetime.now(UTC).isoformat()
           value["reconciled_by_workflow_run_id"] = int(os.environ["GITHUB_RUN_ID"])
           value["reconciled_by_workflow_run_attempt"] = int(os.environ["GITHUB_RUN_ATTEMPT"])
           path.write_text(json.dumps(value, sort_keys=True, separators=(",", ":")), encoding="utf-8")
@@ -269,9 +272,19 @@ jobs:
             test "$attempt" -lt 3 || exit 1
             sleep $((attempt * 2))
           done
+      - name: Determine publication or metadata-validation mode
+        id: run-mode
+        if: steps.restore-state.outputs.reconcile != 'true'
+        run: |
+          set -euo pipefail
+          started_at=$(date --utc +%Y-%m-%dT%H:%M:%S%:z)
+          mode=$(uv run zotero-arxiv-daily validation decide)
+          echo "started_at=$started_at" >> "$GITHUB_OUTPUT"
+          echo "mode=$mode" >> "$GITHUB_OUTPUT"
+          echo "Run mode: $mode" >> "$GITHUB_STEP_SUMMARY"
       - name: Check generation window
         id: generation-window
-        if: steps.restore-state.outputs.reconcile != 'true'
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.run-mode.outputs.mode == 'publication'
         run: |
           arguments=()
           if [ "${{ inputs.allow_peak_generation }}" = "true" ]; then
@@ -284,8 +297,39 @@ jobs:
             echo "Manual peak-time generation requires allow_peak_generation=true." >&2
             exit 1
           fi
+      - name: Refresh public metadata without publication
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.run-mode.outputs.mode == 'metadata-validation'
+        env:
+          REMOTE_PROFILE: ${{ secrets.ZOTERO_ARXIV_DAILY_PROFILE }}
+        run: |
+          set -euo pipefail
+          printf '%s' "$REMOTE_PROFILE" > runtime/remote-profile.json
+          uv run zotero-arxiv-daily arxiv retrieve --profile runtime/remote-profile.json --state runtime/arxiv-state.json
+          uv run zotero-arxiv-daily validation record \
+            --workflow-run-id "${{ github.run_id }}" \
+            --started-at "${{ steps.run-mode.outputs.started_at }}"
+      - name: Persist metadata-only validation state
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.run-mode.outputs.mode == 'metadata-validation'
+        env:
+          ZAD_STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}
+        run: |
+          set -euo pipefail
+          uv run zotero-arxiv-daily state encrypt --input-dir runtime --output runtime/state.enc.json
+          if git worktree list --porcelain | grep -q '^worktree .*/runtime/state$'; then
+            git worktree remove runtime/state --force
+          fi
+          git worktree add -B state runtime/state origin/state
+          git -C runtime/state rm -f -- '*.json' || true
+          cp runtime/state.enc.json runtime/state/
+          git -C runtime/state add -A -- '*.json'
+          git -C runtime/state -c user.name='github-actions[bot]' -c user.email='41898282+github-actions[bot]@users.noreply.github.com' commit -m 'chore(state): record metadata validation'
+          for attempt in 1 2 3; do
+            if git -C runtime/state push origin HEAD:state; then exit 0; fi
+            test "$attempt" -lt 3 || exit 1
+            sleep $((attempt * 2))
+          done
       - name: Retrieve feedback and generate static site
-        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.run-mode.outputs.mode == 'publication' && steps.generation-window.outputs.decision == 'allowed'
         env:
           GH_TOKEN: ${{ github.token }}
           DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
@@ -308,12 +352,12 @@ jobs:
           ZAD_PAGES_PASSPHRASE="$PAGES_PASSPHRASE" uv run zotero-arxiv-daily site build
           uv run python scripts/check_artifacts.py
       - name: Record privacy-safe run manifest
-        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.run-mode.outputs.mode == 'publication' && steps.generation-window.outputs.decision == 'allowed'
         run: |
           set -euo pipefail
           uv run zotero-arxiv-daily evaluate record-manifest
       - name: Capture or compare privacy-safe efficiency evidence
-        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.run-mode.outputs.mode == 'publication' && steps.generation-window.outputs.decision == 'allowed'
         env:
           CAPTURE_EFFICIENCY_BASELINE: ${{ inputs.capture_efficiency_baseline && 'true' || 'false' }}
           COMPARE_EFFICIENCY_CANDIDATE: ${{ inputs.compare_efficiency_candidate && 'true' || 'false' }}
@@ -348,6 +392,9 @@ jobs:
               "duration_seconds",
               "preference_context_enabled",
               "weight_set_version",
+              "quality_profile_version",
+              "quality_profile_criterion_count",
+              "quality_profile_feedback_event_count",
           )
           print("## Privacy-safe run manifest")
           print("```json")
@@ -364,7 +411,7 @@ jobs:
               print("LLM efficiency comparison skipped; quality is the active canary criterion.")
           PY
       - name: Prepare generated state for deployment
-        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.run-mode.outputs.mode == 'publication' && steps.generation-window.outputs.decision == 'allowed'
         env:
           ARTIFACT_DIGEST: ${{ hashFiles('runtime/site/data/*') }}
           ZAD_STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}
@@ -415,31 +462,31 @@ jobs:
             sleep $((attempt * 2))
           done
       - name: Configure GitHub Pages
-        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.run-mode.outputs.mode == 'publication' && steps.generation-window.outputs.decision == 'allowed'
         uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
       - name: Upload GitHub Pages artifact
-        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.run-mode.outputs.mode == 'publication' && steps.generation-window.outputs.decision == 'allowed'
         uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
         with:
           path: runtime/site
       - name: Deploy GitHub Pages
-        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed'
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.run-mode.outputs.mode == 'publication' && steps.generation-window.outputs.decision == 'allowed'
         id: deployment
         continue-on-error: true
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
         with:
           timeout: 600000
       - name: Wait before retrying GitHub Pages deployment
-        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed' && steps.deployment.outcome == 'failure'
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.run-mode.outputs.mode == 'publication' && steps.generation-window.outputs.decision == 'allowed' && steps.deployment.outcome == 'failure'
         run: sleep 60
       - name: Retry GitHub Pages deployment
-        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed' && steps.deployment.outcome == 'failure'
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.run-mode.outputs.mode == 'publication' && steps.generation-window.outputs.decision == 'allowed' && steps.deployment.outcome == 'failure'
         id: deployment-retry
         uses: actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128 # v5.0.0
         with:
           timeout: 600000
       - name: Record deployment identity
-        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed' && (steps.deployment.outcome == 'success' || steps.deployment-retry.outcome == 'success')
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.run-mode.outputs.mode == 'publication' && steps.generation-window.outputs.decision == 'allowed' && (steps.deployment.outcome == 'success' || steps.deployment-retry.outcome == 'success')
         env:
           DEPLOYMENT_URL: ${{ steps.deployment.outputs.page_url || steps.deployment-retry.outputs.page_url }}
           ARTIFACT_DIGEST: ${{ hashFiles('runtime/site/data/*') }}
@@ -448,18 +495,20 @@ jobs:
           python - <<'PY'
           import json
           import os
+          from datetime import UTC, datetime
           from pathlib import Path
           path = Path("runtime/deployment-receipt.json")
           receipt = json.loads(path.read_text(encoding="utf-8"))
           if not isinstance(receipt, dict) or receipt.get("status") != "prepared":
               raise SystemExit("prepared deployment receipt is missing")
           receipt["status"] = "deployed"
+          receipt["deployed_at"] = datetime.now(UTC).isoformat()
           receipt["deployment_url"] = os.environ.get("DEPLOYMENT_URL", "")
           receipt["artifact_digest"] = os.environ["ARTIFACT_DIGEST"]
           path.write_text(json.dumps(receipt, sort_keys=True, separators=(",", ":")), encoding="utf-8")
           PY
       - name: Persist successful run state
-        if: steps.restore-state.outputs.reconcile != 'true' && steps.generation-window.outputs.decision == 'allowed' && (steps.deployment.outcome == 'success' || steps.deployment-retry.outcome == 'success')
+        if: steps.restore-state.outputs.reconcile != 'true' && steps.run-mode.outputs.mode == 'publication' && steps.generation-window.outputs.decision == 'allowed' && (steps.deployment.outcome == 'success' || steps.deployment-retry.outcome == 'success')
         env:
           ZAD_STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}
         run: |
@@ -469,6 +518,8 @@ jobs:
             exit 1
           fi
           uv run zotero-arxiv-daily feedback record-impressions --input runtime/publishable-recommendations.json
+          cp runtime/recommendation-history.next.json runtime/recommendation-history.json
+          rm -f runtime/pending-publishable-recommendations.json runtime/pending-recommendation-history.json
           uv run zotero-arxiv-daily state encrypt \
             --input-dir runtime --output runtime/state.enc.json
           if git worktree list --porcelain | grep -q '^worktree .*/runtime/state$'; then

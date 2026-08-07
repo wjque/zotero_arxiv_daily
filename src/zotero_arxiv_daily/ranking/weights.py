@@ -76,8 +76,6 @@ class WeightSet:
             self.context,
         ):
             raise ValueError("interest relevance must remain the largest ranking group")
-        if not self.ablation and self.scientific_quality + self.reproducibility > self.interest:
-            raise ValueError("quality and reproducibility cannot override interest relevance")
 
     @property
     def positive_total(self) -> float:
@@ -127,7 +125,16 @@ class WeightSet:
         )
 
 
-DEFAULT_WEIGHT_SET = WeightSet("coarse-v1")
+DEFAULT_WEIGHT_SET = WeightSet(
+    "quality-first-v1",
+    interest=0.40,
+    recency=0.05,
+    feedback=0.0,
+    identity=0.10,
+    scientific_quality=0.35,
+    reproducibility=0.10,
+    context=0.0,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -183,6 +190,20 @@ class WeightSetRegistry:
             if item.version == version:
                 return item
         raise ApplicationError("ranking weight-set registry active version is invalid")
+
+    def migrate_release_default(
+        self,
+        weight_set: WeightSet,
+        *,
+        previous_builtin_versions: frozenset[str],
+    ) -> WeightSet:
+        """Activate a release default only over its known built-in predecessor pointer."""
+
+        self.register(weight_set)
+        state = self._read()
+        if state.active_version in previous_builtin_versions:
+            return self.activate(weight_set.version)
+        return self.active(weight_set)
 
     def versions(self) -> tuple[WeightSet, ...]:
         return self._read().weight_sets

@@ -11,10 +11,20 @@ from time import perf_counter
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
 from zotero_arxiv_daily.core.errors import ExternalServiceError
+from zotero_arxiv_daily.evidence.paper_sections import (
+    PaperSectionClient,
+    PaperSections,
+    inspect_paper_sections,
+)
 from zotero_arxiv_daily.evidence.project_page import (
     ProjectPageClient,
     ProjectPageEvidence,
     inspect_project_pages,
+)
+from zotero_arxiv_daily.evidence.repository_materials import (
+    MaterialGrade,
+    RepositoryMaterials,
+    RepositoryMaterialsClient,
 )
 from zotero_arxiv_daily.llm.batch import (
     DEFAULT_REQUEST_BYTE_LIMIT,
@@ -39,6 +49,7 @@ from zotero_arxiv_daily.llm.refinement import (
     run_judgments,
 )
 from zotero_arxiv_daily.profile.models import RemoteProfile
+from zotero_arxiv_daily.profile.quality import QualityReferenceProfile
 from zotero_arxiv_daily.ranking.baseline import (
     BASELINE_VERSION,
     order_baseline,
@@ -147,6 +158,7 @@ def package_result(
     retry_count: int = 0,
     weight_set_version: str = DEFAULT_WEIGHT_SET.version,
     preference_context_enabled: bool = False,
+    quality_profile: QualityReferenceProfile | None = None,
 ) -> tuple[RecommendationSet, RecommendationRunManifest]:
     """Create versioned recommendation data and non-sensitive operational metadata."""
 
@@ -186,6 +198,11 @@ def package_result(
         actual_cost_usd=actual_cost_usd,
         provider_latency_seconds=provider_latency_seconds,
         preference_context_enabled=preference_context_enabled,
+        quality_profile_version=quality_profile.version if quality_profile else None,
+        quality_profile_criterion_count=quality_profile.criterion_count if quality_profile else 0,
+        quality_profile_feedback_event_count=(
+            quality_profile.explicit_feedback_event_count if quality_profile else 0
+        ),
     )
     return result, manifest
 
@@ -422,6 +439,9 @@ def run_refined_recommendation(
     identity_bonus_cap: float = 1.0,
     weight_set: WeightSet = DEFAULT_WEIGHT_SET,
     project_page_client: ProjectPageClient | None = None,
+    paper_section_client: PaperSectionClient | None = None,
+    repository_materials_client: RepositoryMaterialsClient | None = None,
+    quality_profile: QualityReferenceProfile | None = None,
     allow_preference_context: bool = False,
     completed_at: datetime | None = None,
     judge_batch_size: int = 20,
@@ -439,7 +459,7 @@ def run_refined_recommendation(
     eligible = tuple(
         candidate for candidate in candidates if candidate.arxiv_id.canonical not in excluded_ids
     )
-    coarse = pre_rank(
+    preliminary = pre_rank(
         eligible,
         profile,
         now,
@@ -447,6 +467,21 @@ def run_refined_recommendation(
         institution_bonus=institution_bonus,
         identity_bonus_cap=identity_bonus_cap,
         weight_set=weight_set,
+    )[:pre_rank_limit]
+    preliminary_candidates = tuple(item.candidate for item in preliminary)
+    project_pages = inspect_project_pages(preliminary_candidates, project_page_client, cache, now)
+    coarse = pre_rank(
+        preliminary_candidates,
+        profile,
+        now,
+        author_bonus=author_bonus,
+        institution_bonus=institution_bonus,
+        identity_bonus_cap=identity_bonus_cap,
+        weight_set=weight_set,
+        extra_features={
+            identifier: (_project_page_feature(value),)
+            for identifier, value in project_pages.items()
+        },
     )[:pre_rank_limit]
     shortlisted = tuple(item.candidate for item in coarse)
     if not shortlisted:
@@ -463,9 +498,26 @@ def run_refined_recommendation(
             completed_at=completed_at or datetime.now(UTC),
             weight_set_version=weight_set.version,
         )
-    project_pages = inspect_project_pages(shortlisted, project_page_client, cache, now)
+    paper_sections = inspect_paper_sections(shortlisted, paper_section_client, cache, now)
+    shortlisted_ids = {candidate.arxiv_id.canonical for candidate in shortlisted}
+    repository_materials = {
+        identifier: (
+            repository_materials_client.inspect(project_page)
+            if repository_materials_client is not None
+            else RepositoryMaterials(None, MaterialGrade.UNKNOWN, "not-inspected")
+        )
+        for identifier, project_page in project_pages.items()
+        if identifier in shortlisted_ids
+    }
     profile_digest = _profile_digest(profile)
-    judge_records = tuple(_judge_record(candidate) for candidate in shortlisted)
+    judge_records = tuple(
+        _judge_record(
+            candidate,
+            paper_sections[candidate.arxiv_id.canonical],
+            quality_profile,
+        )
+        for candidate in shortlisted
+    )
     judge_keys = _layered_keys(
         cache,
         "judge",
@@ -474,6 +526,7 @@ def run_refined_recommendation(
         model,
         output_language,
         JUDGE_CONTRACT,
+        evidence_snapshot=_records_digest(judge_records),
     )
     judgments, judge_usage = run_judgments(
         provider,
@@ -481,7 +534,17 @@ def run_refined_recommendation(
         judge_records,
         cache_keys=judge_keys,
         allowed_evidence_fields=frozenset(
-            {"title", "authors", "categories", "published", "summary"}
+            {
+                "title",
+                "authors",
+                "categories",
+                "published",
+                "summary",
+                "method_evidence",
+                "evaluation_evidence",
+                "limitations_evidence",
+                "quality_reference",
+            }
         ),
         batch_size=judge_batch_size,
         max_request_tokens=max_request_tokens,
@@ -499,7 +562,9 @@ def run_refined_recommendation(
         identity_bonus_cap=identity_bonus_cap,
         weight_set=weight_set,
         extra_features={
-            identifier: _assessment_features(value, project_pages[identifier])
+            identifier: _assessment_features(
+                value, project_pages[identifier], repository_materials[identifier]
+            )
             for identifier, value in assessments.items()
         },
     )
@@ -537,6 +602,7 @@ def run_refined_recommendation(
             retry_count=judge_usage.retry_count,
             weight_set_version=weight_set.version,
             preference_context_enabled=allow_preference_context,
+            quality_profile=quality_profile,
         )
     explanation_records = tuple(
         _explanation_record(
@@ -555,6 +621,7 @@ def run_refined_recommendation(
         f"{EXPLANATION_CONTRACT}:preference-context-v1"
         if allow_preference_context
         else f"{EXPLANATION_CONTRACT}:public-only",
+        evidence_snapshot=_records_digest(explanation_records),
     )
     explanation_fields = {
         "title",
@@ -580,7 +647,11 @@ def run_refined_recommendation(
         retries=retries,
     )
     records = _refined_records(
-        selected, assessments, {item.arxiv_id: item for item in explanations}
+        selected,
+        assessments,
+        {item.arxiv_id: item for item in explanations},
+        paper_sections,
+        repository_materials,
     )
     input_tokens = judge_usage.estimated_input_tokens + explain_usage.estimated_input_tokens
     output_tokens = judge_usage.estimated_output_tokens + explain_usage.estimated_output_tokens
@@ -634,6 +705,7 @@ def run_refined_recommendation(
         retry_count=judge_usage.retry_count + explain_usage.retry_count,
         weight_set_version=weight_set.version,
         preference_context_enabled=allow_preference_context,
+        quality_profile=quality_profile,
     )
 
 
@@ -694,14 +766,30 @@ def _candidate_fingerprint(candidate: ArxivCandidate) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
-def _judge_record(candidate: ArxivCandidate) -> dict[str, object]:
-    """Keep the quality-assessment contract limited to bounded public arXiv metadata."""
+def _judge_record(
+    candidate: ArxivCandidate,
+    sections: PaperSections,
+    quality_profile: QualityReferenceProfile | None,
+) -> dict[str, object]:
+    """Keep quality assessment limited to bounded, explicitly labeled public evidence."""
 
-    return _model_candidate(candidate)
+    record = _model_candidate(candidate)
+    for name, value in (
+        ("method_evidence", sections.method),
+        ("evaluation_evidence", sections.evaluation),
+        ("limitations_evidence", sections.limitations),
+    ):
+        if value is not None:
+            record[name] = value
+    if quality_profile is not None:
+        record["quality_reference"] = quality_profile.prompt_payload()
+    return record
 
 
 def _assessment_features(
-    assessment: JudgeAssessment, project_page: ProjectPageEvidence
+    assessment: JudgeAssessment,
+    project_page: ProjectPageEvidence,
+    repository_materials: RepositoryMaterials,
 ) -> tuple[NormalizedFeature, ...]:
     dimensions = dict(assessment.dimensions)
     quality_dimensions = (
@@ -727,14 +815,27 @@ def _assessment_features(
             JUDGE_CONTRACT,
             FeatureGroup.SCIENTIFIC_QUALITY,
         ),
+        _project_page_feature(project_page),
         NormalizedFeature(
-            "accessible_project_page",
-            1.0 if project_page.supports_open_source_proxy else 0.0,
-            project_page.supports_open_source_proxy,
-            1.0 if project_page.supports_open_source_proxy else 0.0,
-            "abstract-project-page-v1",
+            "implementation_material",
+            repository_materials.score,
+            repository_materials.available,
+            1.0 if repository_materials.available else 0.0,
+            repository_materials.provenance,
             FeatureGroup.REPRODUCIBILITY,
         ),
+    )
+
+
+def _project_page_feature(project_page: ProjectPageEvidence) -> NormalizedFeature:
+    known = project_page.url is not None and project_page.reachable is not None
+    return NormalizedFeature(
+        "accessible_project_page",
+        1.0 if project_page.reachable is True else 0.0,
+        known,
+        1.0 if known else 0.0,
+        "abstract-project-page-v1",
+        FeatureGroup.REPRODUCIBILITY,
     )
 
 
@@ -771,12 +872,16 @@ def _refined_records(
     selected: tuple[ScoredCandidate, ...],
     assessments: Mapping[str, JudgeAssessment],
     explanations: Mapping[str, Explanation],
+    sections: Mapping[str, PaperSections],
+    materials: Mapping[str, RepositoryMaterials],
 ) -> tuple[RecommendationRecord, ...]:
     records: list[RecommendationRecord] = []
     for item in selected:
         identifier = item.candidate.arxiv_id.canonical
         assessment = assessments[identifier]
         explanation = explanations[identifier]
+        paper_sections = sections[identifier]
+        repository_materials = materials[identifier]
         components = dict(item.components)
         identities = tuple(
             name
@@ -794,6 +899,14 @@ def _refined_records(
                 identities,
                 explanation.limitation,
                 assessment.uncertainty,
+                assessment.evidence_fields,
+                repository_materials.score if repository_materials.available else None,
+                repository_materials.grade.value,
+                (
+                    "arxiv-metadata",
+                    *(("ar5iv-sections-v1",) if paper_sections.available_fields else ()),
+                    *((repository_materials.provenance,) if repository_materials.available else ()),
+                ),
             )
         )
     return order_recommendations(tuple(records))
@@ -850,6 +963,8 @@ def _layered_keys(
     model: str,
     output_language: str,
     contract_version: str,
+    *,
+    evidence_snapshot: str = "no-public-evidence-v1",
 ) -> dict[str, str]:
     return {
         candidate.arxiv_id.canonical: cache.layered_key(
@@ -857,10 +972,15 @@ def _layered_keys(
             arxiv_id=candidate.arxiv_id.canonical,
             candidate_fingerprint=_candidate_fingerprint(candidate),
             protected_profile_digest=profile_digest,
-            evidence_snapshot="no-public-evidence-v1",
+            evidence_snapshot=evidence_snapshot,
             contract_version=contract_version,
             model=model,
             output_language=output_language,
         )
         for candidate in candidates
     }
+
+
+def _records_digest(records: tuple[dict[str, object], ...]) -> str:
+    encoded = json.dumps(records, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
+    return hashlib.sha256(encoded.encode("utf-8")).hexdigest()

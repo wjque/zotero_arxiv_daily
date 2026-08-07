@@ -16,6 +16,10 @@ from zotero_arxiv_daily.pipeline.recommend import (
     run_refined_recommendation,
 )
 from zotero_arxiv_daily.profile.models import RemoteProfile
+from zotero_arxiv_daily.profile.quality import (
+    ApprovedQualityExample,
+    build_quality_reference_profile,
+)
 
 
 def test_manifest_contains_only_counts_and_budget_metadata() -> None:
@@ -411,3 +415,43 @@ def test_refined_manifest_records_measured_usage_and_context_mode(tmp_path: Path
     assert manifest.actual_output_tokens == 40
     assert manifest.provider_latency_seconds == 1.0
     assert manifest.preference_context_enabled
+
+
+def test_refined_run_references_only_aggregate_approved_quality_profile(tmp_path: Path) -> None:
+    interest_profile = RemoteProfile(4, 9, ("learning",), ("cs.LG",), (), ())
+    provider = _RefinementProvider()
+    now = datetime(2026, 8, 1, tzinfo=UTC)
+    quality_profile = build_quality_reference_profile(
+        (
+            ApprovedQualityExample(
+                "private-source-paper-id",
+                True,
+                ("evaluation",),
+                ("baselines",),
+                ("held_out_evaluation",),
+                ("practical_utility",),
+                ("limited_scale",),
+            ),
+        ),
+        (),
+    )
+
+    _, manifest = run_refined_recommendation(
+        (_candidate("2401.00001"),),
+        interest_profile,
+        now,
+        provider,
+        ProposalCache(tmp_path / "quality-profile-cache.json"),
+        model="deepseek-v4-flash",
+        output_language="en",
+        quality_profile=quality_profile,
+        completed_at=now,
+    )
+
+    judge_record = provider.calls[0][1][0]
+    encoded = json.dumps(judge_record["quality_reference"])
+    assert "private-source-paper-id" not in encoded
+    assert judge_record["quality_reference"] == quality_profile.prompt_payload()
+    assert manifest.quality_profile_version == quality_profile.version
+    assert manifest.quality_profile_criterion_count == 5
+    assert manifest.quality_profile_feedback_event_count == 0

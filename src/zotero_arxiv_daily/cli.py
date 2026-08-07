@@ -31,8 +31,11 @@ from zotero_arxiv_daily.evaluation.offline import (
     EvaluationSnapshotStore,
     make_evaluation_snapshot,
 )
+from zotero_arxiv_daily.evidence.github import UrlLibTransport as GitHubTransport
 from zotero_arxiv_daily.evidence.openalex import OpenAlexClient, OpenAlexEvidenceEnricher
+from zotero_arxiv_daily.evidence.paper_sections import PaperSectionClient
 from zotero_arxiv_daily.evidence.project_page import ProjectPageClient, UrlLibProjectPageTransport
+from zotero_arxiv_daily.evidence.repository_materials import RepositoryMaterialsClient
 from zotero_arxiv_daily.evidence.storage import EvidenceCache
 from zotero_arxiv_daily.feedback.ingest import FeedbackStateStore, read_github_issues
 from zotero_arxiv_daily.feedback.ledger import FeedbackLedgerStore
@@ -43,8 +46,17 @@ from zotero_arxiv_daily.pipeline.recommend import (
     run_recommendation,
     run_refined_recommendation,
 )
+from zotero_arxiv_daily.pipeline.validation import (
+    record_metadata_validation,
+    validation_run_mode,
+)
 from zotero_arxiv_daily.profile.export import write_remote_profile
 from zotero_arxiv_daily.profile.models import WatchedIdentity
+from zotero_arxiv_daily.profile.quality import (
+    QualityProfileStore,
+    build_quality_reference_profile,
+    read_quality_examples,
+)
 from zotero_arxiv_daily.profile.service import (
     build_cached_remote_profile,
     local_curated_item_keys,
@@ -237,6 +249,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     state_decrypt_parser.add_argument("--input", type=Path, required=True)
     state_decrypt_parser.add_argument("--output-dir", type=Path, default=Path("runtime"))
+    validation_parser = subcommands.add_parser(
+        "validation", help="Run privacy-safe metadata-only validation under 24 hours"
+    )
+    validation_commands = validation_parser.add_subparsers(dest="validation_command", required=True)
+    validation_decide = validation_commands.add_parser(
+        "decide", help="Choose publication or metadata-only validation"
+    )
+    validation_decide.add_argument(
+        "--receipt", type=Path, default=Path("runtime/deployment-receipt.json")
+    )
+    validation_decide.add_argument("--now", help="Aware ISO instant for deterministic operations")
+    validation_record = validation_commands.add_parser(
+        "record", help="Record a completed metadata-only retrieval"
+    )
+    validation_record.add_argument(
+        "--candidate-state", type=Path, default=Path("runtime/arxiv-state.json")
+    )
+    validation_record.add_argument(
+        "--receipt", type=Path, default=Path("runtime/deployment-receipt.json")
+    )
+    validation_record.add_argument(
+        "--manifest", type=Path, default=Path("runtime/validation-manifest.json")
+    )
+    validation_record.add_argument(
+        "--history", type=Path, default=Path("runtime/validation-manifest-history.json")
+    )
+    validation_record.add_argument("--workflow-run-id", required=True)
+    validation_record.add_argument("--started-at", required=True)
     ranking_parser = subcommands.add_parser(
         "ranking", help="Manage local immutable ranking weight-set versions"
     )
@@ -263,6 +303,32 @@ def build_parser() -> argparse.ArgumentParser:
     )
     ranking_activate_parser.add_argument("--state", type=Path)
     ranking_activate_parser.add_argument("--version", required=True)
+    quality_parser = subcommands.add_parser(
+        "quality-profile", help="Manage protected, explicitly approved quality references"
+    )
+    quality_commands = quality_parser.add_subparsers(dest="quality_profile_command", required=True)
+    quality_generate = quality_commands.add_parser(
+        "generate", help="Generate an immutable candidate from reviewed examples and feedback"
+    )
+    quality_generate.add_argument("--examples", type=Path, required=True)
+    quality_generate.add_argument(
+        "--feedback-state", type=Path, default=Path("runtime/feedback-state.json")
+    )
+    quality_generate.add_argument(
+        "--state", type=Path, default=Path("runtime/quality-profile.json")
+    )
+    quality_approve = quality_commands.add_parser("approve", help="Approve one generated version")
+    quality_approve.add_argument("--version", required=True)
+    quality_approve.add_argument("--state", type=Path, default=Path("runtime/quality-profile.json"))
+    quality_rollback = quality_commands.add_parser(
+        "rollback", help="Move approval back to a prior immutable version"
+    )
+    quality_rollback.add_argument("--version", required=True)
+    quality_rollback.add_argument(
+        "--state", type=Path, default=Path("runtime/quality-profile.json")
+    )
+    quality_list = quality_commands.add_parser("list", help="List generated profile versions")
+    quality_list.add_argument("--state", type=Path, default=Path("runtime/quality-profile.json"))
     arxiv_parser = subcommands.add_parser("arxiv", help="Retrieve public arXiv candidate metadata")
     arxiv_commands = arxiv_parser.add_subparsers(dest="arxiv_command", required=True)
     arxiv_retrieve_parser = arxiv_commands.add_parser(
@@ -286,6 +352,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     recommend_run_parser.add_argument(
         "--weight-state", type=Path, help="Local immutable ranking weight-set registry"
+    )
+    recommend_run_parser.add_argument(
+        "--quality-profile-state",
+        type=Path,
+        default=Path("runtime/quality-profile.json"),
+        help="Protected quality-reference profile registry",
     )
     recommend_run_parser.add_argument(
         "--output", type=Path, default=Path("runtime/publishable-recommendations.json")
@@ -461,6 +533,25 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
                 print(f"decrypted workflow state: {len(files)} files")
                 return 0
+        if args.command == "validation" and args.validation_command == "decide":
+            now = datetime.fromisoformat(args.now) if args.now else datetime.now(UTC)
+            print(validation_run_mode(now, args.receipt).value)
+            return 0
+        if args.command == "validation" and args.validation_command == "record":
+            validation_manifest = record_metadata_validation(
+                ArxivStateStore(args.candidate_state),
+                args.receipt,
+                args.manifest,
+                args.history,
+                started_at=datetime.fromisoformat(args.started_at),
+                completed_at=datetime.now(UTC),
+                workflow_run_id=args.workflow_run_id,
+            )
+            print(
+                "metadata validation recorded: "
+                f"{validation_manifest.candidate_count} candidates, 0 model requests"
+            )
+            return 0
         if args.command == "evaluate" and args.evaluate_command == "record-manifest":
             count = record_manifest(args.input, args.history)
             print(f"run manifest recorded: {count} entries")
@@ -552,6 +643,39 @@ def main(argv: Sequence[str] | None = None) -> int:
             active_weight = registry.activate(args.version)
             print(f"ranking weight set activated: {active_weight.version}")
             return 0
+        if args.command == "quality-profile" and args.quality_profile_command == "generate":
+            quality_candidate = build_quality_reference_profile(
+                read_quality_examples(args.examples),
+                FeedbackLedgerStore(args.feedback_state).events(),
+            )
+            registered = QualityProfileStore(args.state).register(quality_candidate)
+            action = "registered" if registered else "already registered"
+            print(f"quality profile {action}: {quality_candidate.version}")
+            return 0
+        if args.command == "quality-profile" and args.quality_profile_command in {
+            "approve",
+            "rollback",
+        }:
+            quality_store = QualityProfileStore(args.state)
+            quality_candidate = (
+                quality_store.approve(args.version)
+                if args.quality_profile_command == "approve"
+                else quality_store.rollback(args.version)
+            )
+            print(f"quality profile approved: {quality_candidate.version}")
+            return 0
+        if args.command == "quality-profile" and args.quality_profile_command == "list":
+            quality_store = QualityProfileStore(args.state)
+            approved_quality = quality_store.approved()
+            for quality_candidate in quality_store.versions():
+                marker = (
+                    "*"
+                    if approved_quality is not None
+                    and approved_quality.version == quality_candidate.version
+                    else " "
+                )
+                print(f"{marker} {quality_candidate.version}")
+            return 0
         if args.command == "arxiv" and args.arxiv_command == "retrieve":
             profile = read_remote_profile(args.profile)
             categories = profile.core_categories + expand_one_hop(profile.core_categories)
@@ -569,11 +693,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             weight_registry = WeightSetRegistry(
                 args.weight_state or Path(config.ranking_weight_state_path)
             )
-            weight_registry.register(DEFAULT_WEIGHT_SET)
-            weight_set = weight_registry.active()
+            baseline_mode = args.ranking_mode == "v0.1.2"
+            if baseline_mode:
+                weight_registry.register(DEFAULT_WEIGHT_SET)
+                weight_set = weight_registry.active()
+            else:
+                weight_set = weight_registry.migrate_release_default(
+                    DEFAULT_WEIGHT_SET,
+                    previous_builtin_versions=frozenset({"coarse-v1"}),
+                )
+            quality_profile = QualityProfileStore(args.quality_profile_state).approved()
             candidate_store = ArxivStateStore(args.candidate_state)
             candidates = candidate_store.candidates()
-            baseline_mode = args.ranking_mode == "v0.1.2"
             if baseline_mode and config.llm_preference_context_approved:
                 raise ApplicationError("v0.1.2 rollback cannot use LLM preference context")
             provider = DeepSeekClient(
@@ -621,6 +752,9 @@ def main(argv: Sequence[str] | None = None) -> int:
                     identity_bonus_cap=config.identity_bonus_cap,
                     weight_set=weight_set,
                     project_page_client=ProjectPageClient(UrlLibProjectPageTransport()),
+                    paper_section_client=PaperSectionClient(),
+                    repository_materials_client=RepositoryMaterialsClient(GitHubTransport()),
+                    quality_profile=quality_profile,
                     judge_batch_size=config.llm_judge_batch_size,
                     explanation_batch_size=config.llm_explanation_batch_size,
                     max_request_tokens=config.llm_request_token_limit,

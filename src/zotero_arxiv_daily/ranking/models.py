@@ -20,7 +20,7 @@ class ScoredCandidate:
     components: tuple[tuple[str, float], ...]
     source: str
     feature_values: tuple[NormalizedFeature, ...] = ()
-    weight_set_version: str = "coarse-v1"
+    weight_set_version: str = "quality-first-v1"
 
 
 @dataclass(frozen=True, slots=True)
@@ -34,10 +34,25 @@ class RecommendationRecord:
     identity_matches: tuple[str, ...] = ()
     limitation: str | None = None
     uncertainty: float | None = None
+    quality_evidence_fields: tuple[str, ...] = ()
+    reproducibility: float | None = None
+    reproducibility_evidence: str = "unknown"
+    evidence_provenance: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if self.uncertainty is not None and not 0 <= self.uncertainty <= 1:
             raise ValueError("recommendation uncertainty must be between zero and one")
+        if self.reproducibility is not None and not 0 <= self.reproducibility <= 1:
+            raise ValueError("recommendation reproducibility must be between zero and one")
+        allowed_reproducibility = {
+            "unknown",
+            "documentation_only",
+            "implementation",
+            "implementation_and_evaluation",
+            "implementation_data_and_evaluation",
+        }
+        if self.reproducibility_evidence not in allowed_reproducibility:
+            raise ValueError("recommendation reproducibility evidence is invalid")
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,10 +101,13 @@ class RecommendationRunManifest:
     judge_cache_hits: int = 0
     explanation_cache_hits: int = 0
     retry_count: int = 0
-    weight_set_version: str = "coarse-v1"
+    weight_set_version: str = "quality-first-v1"
     candidate_pool_degraded: bool = False
     candidate_pool_degraded_reason: str | None = None
     candidate_pool_source_checkpoint: datetime | None = None
     actual_cost_usd: float | None = None
     provider_latency_seconds: float | None = None
     preference_context_enabled: bool = False
+    quality_profile_version: str | None = None
+    quality_profile_criterion_count: int = 0
+    quality_profile_feedback_event_count: int = 0

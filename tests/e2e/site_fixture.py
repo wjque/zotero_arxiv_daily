@@ -41,6 +41,10 @@ def build_fixtures(output: Path) -> None:
         "It matches the synthetic browser-testing preference.",
         uncertainty=0.22,
         limitation="The fixture does not make a scientific quality claim.",
+        quality_evidence_fields=("method_evidence", "limitations_evidence"),
+        reproducibility=0.8,
+        reproducibility_evidence="implementation_and_evaluation",
+        evidence_provenance=("arxiv-metadata", "ar5iv-sections-v1", "github-contents-v1"),
     )
     published = make_published_set(
         RecommendationSet(2, 1, observed_at, (record,), observed_at),

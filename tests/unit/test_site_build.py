@@ -130,7 +130,14 @@ def test_publishable_schema_v2_adapts_without_a_profile_snapshot(tmp_path: Path)
     for recommendation in recommendations:
         assert isinstance(recommendation, dict)
         legacy = dict(recommendation)
-        legacy.pop("limitation")
+        for field in (
+            "limitation",
+            "quality_evidence_fields",
+            "reproducibility",
+            "reproducibility_evidence",
+            "evidence_provenance",
+        ):
+            legacy.pop(field)
         legacy_recommendations.append(legacy)
     payload["recommendations"] = legacy_recommendations
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -151,7 +158,14 @@ def test_publishable_schema_v3_reader_defaults_the_new_limitation_field(tmp_path
     for recommendation in recommendations:
         assert isinstance(recommendation, dict)
         legacy = dict(recommendation)
-        legacy.pop("limitation")
+        for field in (
+            "limitation",
+            "quality_evidence_fields",
+            "reproducibility",
+            "reproducibility_evidence",
+            "evidence_provenance",
+        ):
+            legacy.pop(field)
         legacy_recommendations.append(legacy)
     payload["recommendations"] = legacy_recommendations
     path.write_text(json.dumps(payload), encoding="utf-8")
@@ -162,7 +176,9 @@ def test_publishable_schema_v3_reader_defaults_the_new_limitation_field(tmp_path
     assert loaded.recommendations[0].limitation is None
 
 
-def test_publishable_schema_v4_round_trips_a_validated_limitation(tmp_path: Path) -> None:
+def test_publishable_schema_v5_round_trips_separate_quality_and_implementation_evidence(
+    tmp_path: Path,
+) -> None:
     base = _recommendations()
     record = base.recommendations[0]
     refined = RecommendationRecord(
@@ -173,6 +189,10 @@ def test_publishable_schema_v4_round_trips_a_validated_limitation(tmp_path: Path
         record.summary,
         record.reason,
         limitation="The abstract does not establish results beyond the described evaluation.",
+        quality_evidence_fields=("method_evidence", "limitations_evidence"),
+        reproducibility=0.8,
+        reproducibility_evidence="implementation_and_evaluation",
+        evidence_provenance=("arxiv-metadata", "ar5iv-sections-v1", "github-contents-v1"),
     )
     path = tmp_path / "recommendations.json"
     published = make_published_set(RecommendationSet(2, 9, base.generated_at, (refined,)))
@@ -180,8 +200,35 @@ def test_publishable_schema_v4_round_trips_a_validated_limitation(tmp_path: Path
 
     loaded = read_published_set(path)
 
-    assert loaded.schema_version == 4
+    assert loaded.schema_version == 5
     assert loaded.recommendations[0].limitation == refined.limitation
+    assert loaded.recommendations[0].quality_evidence_fields == refined.quality_evidence_fields
+    assert loaded.recommendations[0].reproducibility == 0.8
+    assert loaded.recommendations[0].reproducibility_evidence == ("implementation_and_evaluation")
+
+
+def test_publishable_schema_v4_reader_defaults_new_evidence_fields(tmp_path: Path) -> None:
+    path = tmp_path / "recommendations-v4.json"
+    payload = make_published_set(_recommendations()).to_dict()
+    payload["schema_version"] = 4
+    recommendations = payload["recommendations"]
+    assert isinstance(recommendations, tuple)
+    for recommendation in recommendations:
+        assert isinstance(recommendation, dict)
+        for field in (
+            "quality_evidence_fields",
+            "reproducibility",
+            "reproducibility_evidence",
+            "evidence_provenance",
+        ):
+            recommendation.pop(field)
+    path.write_text(json.dumps(payload), encoding="utf-8")
+
+    loaded = read_published_set(path)
+
+    assert loaded.schema_version == 4
+    assert loaded.recommendations[0].quality_evidence_fields == ()
+    assert loaded.recommendations[0].reproducibility is None
 
 
 def test_publishable_schema_v4_keeps_quality_and_uncertainty_distinct(tmp_path: Path) -> None:
@@ -239,7 +286,7 @@ def test_schema_v2_uses_shanghai_date_and_self_contained_accessible_assets(
     build_site(published, output, public_output=True, passphrase=None)
 
     assert published.recommendations[0].published_on == "2026-08-02"
-    assert published.schema_version == 4
+    assert published.schema_version == 5
     assert published.profile_snapshot_at == "2026-08-01T12:00:00+00:00"
     css = (output / "assets/site.css").read_text(encoding="utf-8")
     js = (output / "assets/app.js").read_text(encoding="utf-8")

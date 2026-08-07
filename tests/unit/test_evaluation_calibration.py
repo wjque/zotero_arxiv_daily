@@ -69,11 +69,9 @@ def test_shadow_evaluation_is_provisional_and_never_mutates_weight_state(tmp_pat
     assert {item.group.value for item in report.ablations} == {
         "interest",
         "recency",
-        "feedback",
         "identity",
         "scientific_quality",
         "reproducibility",
-        "context",
     }
     assert output.is_file()
     assert output.stat().st_mode & 0o077 == 0

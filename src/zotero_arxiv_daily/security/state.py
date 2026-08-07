@@ -28,6 +28,9 @@ OPTIONAL_STATE_FILES = (
     "run-manifest-history.json",
     "efficiency-baseline-manifest.json",
     "efficiency-report.json",
+    "quality-profile.json",
+    "validation-manifest.json",
+    "validation-manifest-history.json",
 )
 ALLOWED_STATE_FILES = frozenset((*REQUIRED_STATE_FILES, *OPTIONAL_STATE_FILES))
 

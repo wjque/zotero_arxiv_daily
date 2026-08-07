@@ -40,6 +40,8 @@ def main() -> int:
         if not raw_path:
             continue
         path = Path(raw_path.decode("utf-8"))
+        if not path.is_file():
+            continue
         try:
             content = path.read_text(encoding="utf-8")
         except UnicodeDecodeError:

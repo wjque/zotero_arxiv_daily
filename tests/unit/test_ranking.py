@@ -12,7 +12,7 @@ from zotero_arxiv_daily.llm.contracts import parse_proposals
 from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity
 from zotero_arxiv_daily.ranking.models import RecommendationRecord
 from zotero_arxiv_daily.ranking.select import order_recommendations, pre_rank, select_diverse
-from zotero_arxiv_daily.ranking.weights import FeatureGroup, NormalizedFeature
+from zotero_arxiv_daily.ranking.weights import DEFAULT_WEIGHT_SET, FeatureGroup, NormalizedFeature
 
 
 def _candidate(identifier: str, category: str, title: str, age: int = 1) -> ArxivCandidate:
@@ -272,6 +272,41 @@ def test_unknown_extra_evidence_is_excluded_instead_of_becoming_a_zero_score() -
     )[0]
 
     assert unknown.score == baseline.score
+
+
+def test_quality_first_contributions_use_declared_available_group_weights() -> None:
+    profile = RemoteProfile(1, 1, ("learning",), ("cs.LG",), (), ())
+    candidate = _candidate("2401.00001", "cs.LG", "Learning")
+    scored = pre_rank(
+        (candidate,),
+        profile,
+        datetime(2026, 8, 1, tzinfo=UTC),
+        extra_features={
+            "2401.00001": (
+                NormalizedFeature(
+                    "judge_quality", 0.8, True, 1.0, "judge-v3", FeatureGroup.SCIENTIFIC_QUALITY
+                ),
+                NormalizedFeature(
+                    "accessible_project_page",
+                    1.0,
+                    True,
+                    1.0,
+                    "project-page-v1",
+                    FeatureGroup.REPRODUCIBILITY,
+                ),
+            )
+        },
+    )[0]
+    components = dict(scored.components)
+    available = (
+        DEFAULT_WEIGHT_SET.interest
+        + DEFAULT_WEIGHT_SET.recency
+        + DEFAULT_WEIGHT_SET.scientific_quality
+        + DEFAULT_WEIGHT_SET.reproducibility
+    )
+
+    assert components["scientific_quality_contribution"] == pytest.approx(0.35 * 0.8 / available)
+    assert components["reproducibility_contribution"] == pytest.approx(0.10 / available)
 
 
 def test_facet_matching_normalizes_hyphenated_and_spaced_labels() -> None:
