@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,8 @@ _FIELDS = frozenset({"title", "summary", "categories", "evidence.context"})
 _DIMENSIONS = {
     "contribution_clarity": 0.8,
     "novelty": None,
+    "solution_advance": 0.5,
+    "technical_depth": 0.7,
     "insight_plausibility": 0.6,
     "methodological_evidence": 0.7,
     "empirical_evidence": None,
@@ -30,6 +33,7 @@ def test_judge_contract_preserves_unknown_dimensions_and_bounded_evidence() -> N
     )
 
     assert dict(judgments[0].dimensions)[QualityDimension.NOVELTY] is None
+    assert dict(judgments[0].dimensions)[QualityDimension.SOLUTION_ADVANCE] == 0.5
     assert judgments[0].evidence_fields == ("summary", "evidence.context")
 
 
@@ -42,6 +46,34 @@ def test_judge_rejects_unsupplied_evidence_references() -> None:
             _IDS,
             _FIELDS,
         )
+
+
+def test_legacy_judge_contract_keeps_exact_legacy_dimensions() -> None:
+    legacy = {
+        key: value
+        for key, value in _DIMENSIONS.items()
+        if key not in {"solution_advance", "technical_depth"}
+    }
+
+    judgments = parse_judgments(
+        json.dumps(
+            {
+                "judgments": [
+                    {
+                        "arxiv_id": "2401.00001",
+                        "dimensions": legacy,
+                        "uncertainty": 0.3,
+                        "evidence_fields": ["summary", "evidence.context"],
+                    }
+                ]
+            }
+        ),
+        _IDS,
+        _FIELDS,
+        contract="judge-v4",
+    )
+
+    assert QualityDimension.SOLUTION_ADVANCE not in dict(judgments[0].dimensions)
 
 
 def test_explain_contract_rejects_generic_reasons_and_requires_limits() -> None:

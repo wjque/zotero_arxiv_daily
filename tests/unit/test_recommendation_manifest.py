@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate, ArxivId
+from zotero_arxiv_daily.evidence.paper_sections import PaperSectionClient
 from zotero_arxiv_daily.evidence.project_page import PageResponse, ProjectPageClient
 from zotero_arxiv_daily.llm.cache import ProposalCache
 from zotero_arxiv_daily.llm.contracts import ProviderCompletion
@@ -106,6 +107,11 @@ class _RefinementProvider:
                         "dimensions": {
                             "contribution_clarity": score,
                             "novelty": score,
+                            **(
+                                {"solution_advance": score, "technical_depth": score}
+                                if contract == "judge-v5"
+                                else {}
+                            ),
                             "insight_plausibility": score,
                             "methodological_evidence": score,
                             "empirical_evidence": None,
@@ -142,11 +148,33 @@ class _MeasuredRefinementProvider:
         return ProviderCompletion(response, input_tokens=100, output_tokens=20, latency_seconds=0.5)
 
 
+class _IncrementalRefinementProvider(_RefinementProvider):
+    def complete(self, contract: str, records: list[dict[str, object]]) -> str:
+        response = super().complete(contract, records)
+        if contract != "judge-v5":
+            return response
+        value = json.loads(response)
+        for judgment in value["judgments"]:
+            if judgment["arxiv_id"] == "2401.00002":
+                judgment["dimensions"]["solution_advance"] = 0.25
+        return json.dumps(value)
+
+
 class _ReachableProjectPageTransport:
     def fetch(self, url: str, timeout_seconds: float) -> PageResponse:
         assert url == "https://github.com/example/project"
         assert timeout_seconds == 5.0
         return PageResponse(200)
+
+
+class _PaperSectionTransport:
+    def fetch(self, url: str, timeout_seconds: float) -> bytes:
+        assert url.startswith("https://ar5iv.labs.arxiv.org/html/")
+        assert timeout_seconds == 10.0
+        return (
+            b"<h2>Method</h2><p>A direct adapter is added to the baseline.</p>"
+            b"<h2>Evaluation</h2><p>The claimed gain is measured on one benchmark.</p>"
+        )
 
 
 def test_fully_suppressed_input_creates_empty_batch_without_model_call(tmp_path: Path) -> None:
@@ -329,7 +357,7 @@ def test_refined_run_judges_shortlist_and_generates_final_only_explanations(tmp_
     )
 
     assert len(result.recommendations) == 3
-    assert [contract for contract, _ in provider.calls] == ["judge-v4", "explain-v2"]
+    assert [contract for contract, _ in provider.calls] == ["judge-v5", "explain-v3"]
     assert len(provider.calls[0][1]) == 4
     assert len(provider.calls[1][1]) == 3
     assert all("relevance_signals" not in record for record in provider.calls[1][1])
@@ -353,11 +381,35 @@ def test_refined_run_judges_shortlist_and_generates_final_only_explanations(tmp_
     )
 
     assert [contract for contract, _ in provider.calls] == [
-        "judge-v4",
-        "explain-v2",
-        "explain-v2",
+        "judge-v5",
+        "explain-v3",
+        "explain-v3",
     ]
     assert all("relevance_signals" in record for record in provider.calls[-1][1])
+
+
+def test_refined_run_filters_evidence_supported_incremental_solution(tmp_path: Path) -> None:
+    provider = _IncrementalRefinementProvider()
+    candidates = (
+        replace(_candidate("2401.00001"), title="Learning alpha", authors=("Alice",)),
+        replace(_candidate("2401.00002"), title="Learning beta", authors=("Bob",)),
+    )
+
+    result, manifest = run_refined_recommendation(
+        candidates,
+        RemoteProfile(4, 9, ("learning",), ("cs.LG",), (), ()),
+        datetime(2026, 8, 1, tzinfo=UTC),
+        provider,
+        ProposalCache(tmp_path / "value-gate-cache.json"),
+        model="deepseek-v4-flash",
+        output_language="en",
+    )
+
+    assert [record.candidate.arxiv_id.canonical for record in result.recommendations] == [
+        "2401.00001"
+    ]
+    assert manifest.scientific_value_filtered_count == 1
+    assert [record["arxiv_id"] for record in provider.calls[-1][1]] == ["2401.00001"]
 
 
 def test_refined_ranking_adds_reachable_abstract_project_page_evidence(tmp_path: Path) -> None:
@@ -390,6 +442,30 @@ def test_refined_ranking_adds_reachable_abstract_project_page_evidence(tmp_path:
         "2401.00002",
         "2401.00001",
     ]
+
+
+def test_explanation_receives_method_and_evaluation_without_limitation_fallback(
+    tmp_path: Path,
+) -> None:
+    provider = _RefinementProvider()
+
+    run_refined_recommendation(
+        (_candidate("2401.00001"),),
+        RemoteProfile(4, 9, ("learning",), ("cs.LG",), (), ()),
+        datetime(2026, 8, 1, tzinfo=UTC),
+        provider,
+        ProposalCache(tmp_path / "critical-assessment-cache.json"),
+        model="deepseek-v4-flash",
+        output_language="en",
+        paper_section_client=PaperSectionClient(_PaperSectionTransport()),
+    )
+
+    explanation_record = provider.calls[-1][1][0]
+    assert explanation_record["method_evidence"] == "A direct adapter is added to the baseline."
+    assert explanation_record["evaluation_evidence"] == (
+        "The claimed gain is measured on one benchmark."
+    )
+    assert "limitations_evidence" not in explanation_record
 
 
 def test_refined_manifest_records_measured_usage_and_context_mode(tmp_path: Path) -> None:

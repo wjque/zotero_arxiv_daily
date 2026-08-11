@@ -214,11 +214,16 @@ uv run zotero-arxiv-daily ranking activate-weights \
 ```
 
 `ZAD_LLM_REFINEMENT_ENABLED` is enabled in the production workflow and `.env.example` so quality
-assessment is the default path. The pipeline judges only the coarse shortlist with `judge-v4`,
-applies local selection, and asks `explain-v2` for only the final papers. The judge uses fixed score
-anchors and uncertainty; explanations must name the problem, approach, claimed result, a concrete
-paper-specific contribution, and a limitation grounded in at least two supplied fields. Existing
-older judge/explain cache entries are intentionally ignored. `ZAD_LLM_PREFERENCE_CONTEXT_APPROVED`
+assessment is the default path. The pipeline judges only the coarse shortlist with `judge-v5`,
+applies local selection, and asks `explain-v3` for only the final papers. The judge separately scores
+solution advance and technical depth. Local gates reject a supported score below `0.50` in either
+dimension when confidence is at least `0.50`; unknown or lower-confidence assessments do not reject a
+paper. Routine recombination, component substitution, tuning, or a direct architecture extension
+without demonstrated meaningful gain is treated as weak. Complexity alone is not valuable: a simple
+method can pass when bounded evidence demonstrates a non-obvious insight or large robust improvement.
+Explanations receive bounded method and evaluation evidence and must infer a paper-specific critical
+limitation when supported instead of falling back solely because no limitations section was found.
+Existing older judge/explain cache entries are intentionally ignored. `ZAD_LLM_PREFERENCE_CONTEXT_APPROVED`
 is a separate opt-in for fixed categorical relevance signals such as `topic_overlap`; it never
 sends terms, notes, annotations, collection names, labels, or feedback prose. Do not set it without
 documenting the field-level trust-boundary approval. Batch size, request token/byte limits, retry
@@ -246,13 +251,15 @@ uv run zotero-arxiv-daily quality-profile rollback --version PRIOR_VERSION
 uv run zotero-arxiv-daily quality-profile clear-approval
 ```
 
-Generation uses the registered `quality-reference-policy-v1` interpretation policy by default. Use
+Generation uses the registered `quality-reference-policy-v2` interpretation policy by default. Use
 `--policy-version` only to select another application-registered policy. Policies assign behavior to
 whole fields rather than named papers or individual traits: research problems and motivations are
 local descriptive data and do not enter model payloads; methodology and evidence standards are
-optional positive references; tolerated limitations are non-scoring context. Relative support is
-never a score or threshold, and a missing criterion never reduces candidate quality. Policy version
-is part of each new profile's immutable identity, and its fingerprint prevents silent
+evaluation references; tolerated limitations are non-scoring context. A demonstrated failure against
+an evaluation reference may lower a relevant dimension only when supplied candidate evidence is
+sufficient to assess it. Missing or unavailable evidence remains unknown. Relative support is never
+a score or threshold. Policy version is part of each new profile's immutable identity and its
+fingerprint prevents silent
 reinterpretation, so a future policy upgrade creates a separately reviewable profile and judge-cache
 namespace.
 
@@ -277,9 +284,10 @@ encrypted `state` branch. Use `rollback` with a prior version, or `clear-approva
 activation has no prior version.
 
 The workflow's optional `policy_version` input selects an application-registered policy during
-generation. Existing schema-v1 profiles remain readable under the compatibility policy; newly
-generated profiles use schema v2 and persist their policy version explicitly. The compatibility
-policy retains `judge-v3` for existing profiles and cannot be selected for new generation.
+generation. Existing schema-v1 profiles retain `judge-v3`; schema-v2 policy-v1 profiles retain
+`judge-v4`; new default profiles use policy v2 and `judge-v5`. No existing approved profile is
+silently reinterpreted. Generate, inspect, and explicitly approve a policy-v2 version to activate the
+new value gates.
 
 The judge receives only criterion names, normalized aggregate support, and the immutable profile
 version. Source paper IDs, Zotero content, and feedback events or prose are excluded. Private run

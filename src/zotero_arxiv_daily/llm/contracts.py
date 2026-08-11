@@ -40,10 +40,23 @@ class ModelProposal:
 class QualityDimension(StrEnum):
     CONTRIBUTION_CLARITY = "contribution_clarity"
     NOVELTY = "novelty"
+    SOLUTION_ADVANCE = "solution_advance"
+    TECHNICAL_DEPTH = "technical_depth"
     INSIGHT_PLAUSIBILITY = "insight_plausibility"
     METHODOLOGICAL_EVIDENCE = "methodological_evidence"
     EMPIRICAL_EVIDENCE = "empirical_evidence"
     LIMITATIONS = "limitations"
+
+
+_LEGACY_QUALITY_DIMENSIONS = (
+    QualityDimension.CONTRIBUTION_CLARITY,
+    QualityDimension.NOVELTY,
+    QualityDimension.INSIGHT_PLAUSIBILITY,
+    QualityDimension.METHODOLOGICAL_EVIDENCE,
+    QualityDimension.EMPIRICAL_EVIDENCE,
+    QualityDimension.LIMITATIONS,
+)
+_VALUE_QUALITY_DIMENSIONS = tuple(QualityDimension)
 
 
 @dataclass(frozen=True, slots=True)
@@ -116,6 +129,8 @@ def parse_judgments(
     payload: str,
     allowed_ids: frozenset[str],
     allowed_evidence_fields: frozenset[str],
+    *,
+    contract: str = "judge-v5",
 ) -> tuple[JudgeAssessment, ...]:
     """Validate versioned judge output without allowing new facts or identifiers."""
 
@@ -125,7 +140,7 @@ def parse_judgments(
     for entry in entries:
         if set(entry) != expected:
             raise ExternalServiceError("judge response has unsupported fields")
-        dimensions = _dimensions(entry["dimensions"])
+        dimensions = _dimensions(entry["dimensions"], contract)
         uncertainty = entry["uncertainty"]
         if not isinstance(uncertainty, (int, float)) or isinstance(uncertainty, bool):
             raise ExternalServiceError("judge uncertainty is invalid")
@@ -148,7 +163,7 @@ def parse_explanations(
     allowed_ids: frozenset[str],
     allowed_evidence_fields: frozenset[str],
 ) -> tuple[Explanation, ...]:
-    """Validate explain-v2 final-only prose and its bounded evidence references."""
+    """Validate versioned final-only prose and its bounded evidence references."""
 
     entries = _entries(payload, "explanations", allowed_ids)
     expected = {"arxiv_id", "summary", "reason", "limitation", "evidence_fields"}
@@ -199,12 +214,19 @@ def _allowed_id(value: object, allowed_ids: frozenset[str]) -> str:
     return identifier
 
 
-def _dimensions(value: object) -> tuple[tuple[QualityDimension, float | None], ...]:
-    expected = {dimension.value for dimension in QualityDimension}
+def _dimensions(value: object, contract: str) -> tuple[tuple[QualityDimension, float | None], ...]:
+    contract_dimensions: tuple[QualityDimension, ...]
+    if contract in {"judge-v3", "judge-v4"}:
+        contract_dimensions = _LEGACY_QUALITY_DIMENSIONS
+    elif contract == "judge-v5":
+        contract_dimensions = _VALUE_QUALITY_DIMENSIONS
+    else:
+        raise ExternalServiceError("judge contract is unsupported")
+    expected = {dimension.value for dimension in contract_dimensions}
     if not isinstance(value, dict) or set(value) != expected:
         raise ExternalServiceError("judge dimensions are invalid")
     dimensions: list[tuple[QualityDimension, float | None]] = []
-    for dimension in QualityDimension:
+    for dimension in contract_dimensions:
         score = value[dimension.value]
         if score is not None and (
             not isinstance(score, (int, float)) or isinstance(score, bool) or not 0 <= score <= 1

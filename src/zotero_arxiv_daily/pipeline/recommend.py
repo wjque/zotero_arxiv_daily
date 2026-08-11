@@ -65,9 +65,15 @@ from zotero_arxiv_daily.ranking.models import (
     RecommendationRecord,
     RecommendationRunManifest,
     RecommendationSet,
+    ScientificValueAssessment,
     ScoredCandidate,
 )
-from zotero_arxiv_daily.ranking.select import order_recommendations, pre_rank, select_diverse
+from zotero_arxiv_daily.ranking.select import (
+    order_recommendations,
+    pre_rank,
+    scientific_value_rejections,
+    select_diverse,
+)
 from zotero_arxiv_daily.ranking.weights import (
     DEFAULT_WEIGHT_SET,
     FeatureGroup,
@@ -162,6 +168,7 @@ def package_result(
     weight_set_version: str = DEFAULT_WEIGHT_SET.version,
     preference_context_enabled: bool = False,
     quality_profile: QualityReferenceProfile | None = None,
+    scientific_value_filtered_count: int = 0,
 ) -> tuple[RecommendationSet, RecommendationRunManifest]:
     """Create versioned recommendation data and non-sensitive operational metadata."""
 
@@ -206,6 +213,7 @@ def package_result(
         quality_profile_feedback_event_count=(
             quality_profile.explicit_feedback_event_count if quality_profile else 0
         ),
+        scientific_value_filtered_count=scientific_value_filtered_count,
     )
     return result, manifest
 
@@ -581,7 +589,9 @@ def run_refined_recommendation(
             for identifier, value in assessments.items()
         },
     )
-    selected = select_diverse(judged)
+    scientific_values = _scientific_value_assessments(assessments)
+    value_filtered_count = len(scientific_value_rejections(judged, scientific_values))
+    selected = select_diverse(judged, scientific_values=scientific_values)
     if not selected:
         tokens = judge_usage.estimated_input_tokens + judge_usage.estimated_output_tokens
         actual_tokens = (
@@ -616,10 +626,14 @@ def run_refined_recommendation(
             weight_set_version=weight_set.version,
             preference_context_enabled=allow_preference_context,
             quality_profile=quality_profile,
+            scientific_value_filtered_count=value_filtered_count,
         )
     explanation_records = tuple(
         _explanation_record(
-            item, assessments[item.candidate.arxiv_id.canonical], allow_preference_context
+            item,
+            assessments[item.candidate.arxiv_id.canonical],
+            paper_sections[item.candidate.arxiv_id.canonical],
+            allow_preference_context,
         )
         for item in selected
     )
@@ -644,6 +658,9 @@ def run_refined_recommendation(
         "summary",
         "quality_dimensions",
         "quality_uncertainty",
+        "method_evidence",
+        "evaluation_evidence",
+        "limitations_evidence",
     }
     if allow_preference_context:
         explanation_fields.add("relevance_signals")
@@ -719,6 +736,7 @@ def run_refined_recommendation(
         weight_set_version=weight_set.version,
         preference_context_enabled=allow_preference_context,
         quality_profile=quality_profile,
+        scientific_value_filtered_count=value_filtered_count,
     )
 
 
@@ -809,13 +827,15 @@ def _assessment_features(
     quality_dimensions = (
         QualityDimension.CONTRIBUTION_CLARITY,
         QualityDimension.NOVELTY,
+        QualityDimension.SOLUTION_ADVANCE,
+        QualityDimension.TECHNICAL_DEPTH,
         QualityDimension.INSIGHT_PLAUSIBILITY,
         QualityDimension.METHODOLOGICAL_EVIDENCE,
         QualityDimension.EMPIRICAL_EVIDENCE,
     )
     quality_values: list[float] = []
     for dimension in quality_dimensions:
-        value = dimensions[dimension]
+        value = dimensions.get(dimension)
         if value is not None:
             quality_values.append(value)
     confidence = 1.0 - assessment.uncertainty
@@ -854,13 +874,23 @@ def _project_page_feature(project_page: ProjectPageEvidence) -> NormalizedFeatur
 
 
 def _explanation_record(
-    item: ScoredCandidate, assessment: JudgeAssessment, allow_preference_context: bool
+    item: ScoredCandidate,
+    assessment: JudgeAssessment,
+    sections: PaperSections,
+    allow_preference_context: bool,
 ) -> dict[str, object]:
     record = _model_candidate(item.candidate)
     record["quality_dimensions"] = {
         dimension.value: value for dimension, value in assessment.dimensions
     }
     record["quality_uncertainty"] = assessment.uncertainty
+    for name, value in (
+        ("method_evidence", sections.method),
+        ("evaluation_evidence", sections.evaluation),
+        ("limitations_evidence", sections.limitations),
+    ):
+        if value is not None:
+            record[name] = value
     if allow_preference_context:
         record["relevance_signals"] = list(_relevance_signals(item))
     return record
@@ -930,6 +960,8 @@ def _quality_score(assessment: JudgeAssessment) -> float:
     dimensions = {
         QualityDimension.CONTRIBUTION_CLARITY,
         QualityDimension.NOVELTY,
+        QualityDimension.SOLUTION_ADVANCE,
+        QualityDimension.TECHNICAL_DEPTH,
         QualityDimension.INSIGHT_PLAUSIBILITY,
         QualityDimension.METHODOLOGICAL_EVIDENCE,
         QualityDimension.EMPIRICAL_EVIDENCE,
@@ -942,6 +974,23 @@ def _quality_score(assessment: JudgeAssessment) -> float:
         return 0.0
     confidence = 1.0 - assessment.uncertainty
     return (sum(values) / len(values)) * confidence
+
+
+def _scientific_value_assessments(
+    assessments: Mapping[str, JudgeAssessment],
+) -> dict[str, ScientificValueAssessment]:
+    values: dict[str, ScientificValueAssessment] = {}
+    for identifier, assessment in assessments.items():
+        dimensions = dict(assessment.dimensions)
+        solution_advance = dimensions.get(QualityDimension.SOLUTION_ADVANCE)
+        technical_depth = dimensions.get(QualityDimension.TECHNICAL_DEPTH)
+        if solution_advance is not None or technical_depth is not None:
+            values[identifier] = ScientificValueAssessment(
+                solution_advance,
+                technical_depth,
+                1.0 - assessment.uncertainty,
+            )
+    return values
 
 
 def _profile_digest(profile: RemoteProfile) -> str:

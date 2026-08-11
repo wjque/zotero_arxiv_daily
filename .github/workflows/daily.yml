@@ -395,6 +395,7 @@ jobs:
               "quality_profile_version",
               "quality_profile_criterion_count",
               "quality_profile_feedback_event_count",
+              "scientific_value_filtered_count",
           )
           print("## Privacy-safe run manifest")
           print("```json")

@@ -13,6 +13,8 @@ _FIELDS = frozenset({"title", "summary", "evidence.context"})
 _DIMENSIONS = {
     "contribution_clarity": 0.8,
     "novelty": None,
+    "solution_advance": 0.6,
+    "technical_depth": 0.7,
     "insight_plausibility": 0.7,
     "methodological_evidence": 0.6,
     "empirical_evidence": None,
@@ -121,5 +123,5 @@ def test_explanation_runner_uses_a_distinct_contract_and_cache_namespace(tmp_pat
     )
 
     assert values[0].arxiv_id == "2401.00001"
-    assert provider.calls[0][0] == "explain-v2"
+    assert provider.calls[0][0] == "explain-v3"
     assert usage.estimated_output_tokens > 0

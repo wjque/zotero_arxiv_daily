@@ -162,3 +162,9 @@ def test_quality_profile_workflow_is_protected_private_and_non_publishing() -> N
         "gh issue list",
     ):
         assert forbidden not in workflow
+
+
+def test_daily_workflow_reports_scientific_value_filter_count() -> None:
+    workflow = Path(".github/workflows/daily.yml").read_text(encoding="utf-8")
+
+    assert '"scientific_value_filtered_count"' in workflow

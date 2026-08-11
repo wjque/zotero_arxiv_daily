@@ -111,11 +111,28 @@ def test_current_judge_contract_applies_versioned_non_penalizing_reference_polic
     assert DEFAULT_QUALITY_REFERENCE_POLICY.version in prompt
     assert "relative prevalence within each field" in prompt
     assert "must never increase or decrease a dimension score" in prompt
-    assert "absence must never lower a score" in prompt
+    assert "demonstrated failure may lower the relevant dimension" in prompt
+    assert "Routine recombination" in prompt
+    assert "Absence of a limitations section alone is unknown" in prompt
     assert "an empty value means unspecified" in prompt
     assert "quality_reference is context, not candidate evidence" in prompt
     allowed_fields = prompt.split("the only allowed names are ", 1)[1]
     assert "quality_reference" not in allowed_fields
+
+
+def test_explanation_contract_requires_evidence_bounded_critical_assessment() -> None:
+    transport = _Transport()
+
+    DeepSeekClient("test-key", transport=transport).complete(
+        "explain-v3",
+        [{"arxiv_id": "2401.00001", "summary": "public abstract"}],
+    )
+
+    assert transport.payload is not None
+    prompt = json.loads(transport.payload)["messages"][0]["content"]
+    assert "Do not fall back" in prompt
+    assert "inferred risk from an author-stated limitation" in prompt
+    assert "exact unresolved comparison" in prompt
 
 
 def test_deepseek_adapter_preserves_provider_usage_metadata() -> None:

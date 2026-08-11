@@ -17,10 +17,14 @@
 
 ### Changed
 
-- Upgraded quality references to schema v2 and `judge-v4`. A versioned policy registry now treats
-  topic and motivation fields as local-only descriptive data, uses methodology and evidence only as
-  non-penalizing positive references, and keeps limitations as context. Schema-v1 profiles retain
-  their legacy judge contract; schema-v2 fingerprints prevent silent policy reinterpretation.
+- Upgraded default quality assessment to policy v2, `judge-v5`, and `explain-v3`. Solution advance
+  and technical depth now have confidence-bounded local selection gates, while final explanations use
+  available method and evaluation evidence for paper-specific critical assessment instead of relying
+  on an extracted limitations section. Existing policy-v1 profiles retain `judge-v4` until an
+  operator explicitly generates and approves a policy-v2 profile.
+- Treat methodology and evidence standards as evaluation references under policy v2. Demonstrated
+  failures may affect relevant dimensions only when supplied candidate evidence is sufficient;
+  missing or unavailable evidence remains unknown, and profile support remains non-scoring.
 - Activated the quality-first production weights: interest `0.40`, recency `0.05`, watched identity
   `0.10`, scientific quality `0.35`, and project/implementation evidence `0.10`.
 - Moved bounded project-page reachability into coarse screening and expanded fine screening from

@@ -10,7 +10,11 @@ from datetime import UTC, datetime
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
 from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity, normalize_identity
-from zotero_arxiv_daily.ranking.models import RecommendationRecord, ScoredCandidate
+from zotero_arxiv_daily.ranking.models import (
+    RecommendationRecord,
+    ScientificValueAssessment,
+    ScoredCandidate,
+)
 from zotero_arxiv_daily.ranking.weights import (
     DEFAULT_WEIGHT_SET,
     FeatureGroup,
@@ -37,9 +41,19 @@ class SelectionPolicy:
     adjacent_cap: int = 4
     exploration_cap: int = 2
     minimum_judged_quality: float = 0.25
+    minimum_solution_advance: float = 0.5
+    minimum_technical_depth: float = 0.5
+    minimum_value_confidence: float = 0.5
 
     def __post_init__(self) -> None:
-        if not 0 <= self.minimum_score <= 1 or not 0 <= self.minimum_judged_quality <= 1:
+        thresholds = (
+            self.minimum_score,
+            self.minimum_judged_quality,
+            self.minimum_solution_advance,
+            self.minimum_technical_depth,
+            self.minimum_value_confidence,
+        )
+        if any(not 0 <= value <= 1 for value in thresholds):
             raise ValueError("selection thresholds must be normalized")
         if self.target < 1 or min(self.core_cap, self.adjacent_cap, self.exploration_cap) < 0:
             raise ValueError("selection counts are invalid")
@@ -149,12 +163,16 @@ def select_diverse(
     target: int = 20,
     *,
     policy: SelectionPolicy | None = None,
+    scientific_values: Mapping[str, ScientificValueAssessment] | None = None,
 ) -> tuple[ScoredCandidate, ...]:
     """Select quality-qualified results with quotas and author/topic diversity."""
 
     if policy is None and minimum_score > 1:
         return ()
     active_policy = policy or SelectionPolicy(minimum_score=minimum_score, target=target)
+    value_rejections = scientific_value_rejections(
+        scored, scientific_values or {}, policy=active_policy
+    )
     quotas = {
         "core": active_policy.core_cap,
         "adjacent": active_policy.adjacent_cap,
@@ -168,6 +186,7 @@ def select_diverse(
         for item in scored
         if item.score >= active_policy.minimum_score
         and _meets_judged_quality(item, active_policy.minimum_judged_quality)
+        and item.candidate.arxiv_id.canonical not in value_rejections
     ]
     # Reserve an eligible exploration slot before source-cap filling. Presentation order is applied
     # after selection, so this does not turn the batch into a source-grouped reading experience.
@@ -303,3 +322,35 @@ def _meets_judged_quality(item: ScoredCandidate, minimum: float) -> bool:
         if feature.group is FeatureGroup.SCIENTIFIC_QUALITY and feature.applicable
     ]
     return not values or sum(values) / len(values) >= minimum
+
+
+def _meets_scientific_value(
+    assessment: ScientificValueAssessment | None, policy: SelectionPolicy
+) -> bool:
+    if assessment is None or assessment.confidence < policy.minimum_value_confidence:
+        return True
+    return (
+        assessment.solution_advance is None
+        or assessment.solution_advance >= policy.minimum_solution_advance
+    ) and (
+        assessment.technical_depth is None
+        or assessment.technical_depth >= policy.minimum_technical_depth
+    )
+
+
+def scientific_value_rejections(
+    scored: tuple[ScoredCandidate, ...],
+    scientific_values: Mapping[str, ScientificValueAssessment],
+    *,
+    policy: SelectionPolicy | None = None,
+) -> frozenset[str]:
+    """Return only IDs rejected by confident, evidence-bounded local value gates."""
+
+    active_policy = policy or SelectionPolicy()
+    return frozenset(
+        item.candidate.arxiv_id.canonical
+        for item in scored
+        if not _meets_scientific_value(
+            scientific_values.get(item.candidate.arxiv_id.canonical), active_policy
+        )
+    )

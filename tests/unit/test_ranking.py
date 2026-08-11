@@ -10,8 +10,13 @@ from zotero_arxiv_daily.arxiv.models import ArxivCandidate, ArxivId
 from zotero_arxiv_daily.core.errors import ExternalServiceError
 from zotero_arxiv_daily.llm.contracts import parse_proposals
 from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity
-from zotero_arxiv_daily.ranking.models import RecommendationRecord
-from zotero_arxiv_daily.ranking.select import order_recommendations, pre_rank, select_diverse
+from zotero_arxiv_daily.ranking.models import RecommendationRecord, ScientificValueAssessment
+from zotero_arxiv_daily.ranking.select import (
+    order_recommendations,
+    pre_rank,
+    scientific_value_rejections,
+    select_diverse,
+)
 from zotero_arxiv_daily.ranking.weights import DEFAULT_WEIGHT_SET, FeatureGroup, NormalizedFeature
 
 
@@ -272,6 +277,29 @@ def test_unknown_extra_evidence_is_excluded_instead_of_becoming_a_zero_score() -
     )[0]
 
     assert unknown.score == baseline.score
+
+
+def test_local_value_gates_reject_supported_incremental_work_but_preserve_unknowns() -> None:
+    profile = RemoteProfile(1, 1, ("learning",), ("cs.LG",), (), ())
+    candidates = tuple(
+        _candidate(f"2401.{index:05d}", "cs.LG", f"Learning {title}")
+        for index, title in enumerate(("alpha", "beta", "gamma", "delta"), start=1)
+    )
+    scored = pre_rank(candidates, profile, datetime(2026, 8, 1, tzinfo=UTC))
+
+    assessments = {
+        "2401.00001": ScientificValueAssessment(0.25, 0.8, 0.8),
+        "2401.00002": ScientificValueAssessment(0.8, 0.25, 0.8),
+        "2401.00003": ScientificValueAssessment(None, None, 0.8),
+        "2401.00004": ScientificValueAssessment(0.25, 0.25, 0.4),
+    }
+    selected = select_diverse(scored, scientific_values=assessments)
+
+    identifiers = {item.candidate.arxiv_id.canonical for item in selected}
+    assert identifiers == {"2401.00003", "2401.00004"}
+    assert scientific_value_rejections(scored, assessments) == frozenset(
+        {"2401.00001", "2401.00002"}
+    )
 
 
 def test_quality_first_contributions_use_declared_available_group_weights() -> None:

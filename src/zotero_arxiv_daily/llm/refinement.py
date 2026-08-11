@@ -31,7 +31,7 @@ class StructuredProvider(Protocol):
 
 
 JUDGE_CONTRACT = DEFAULT_QUALITY_REFERENCE_POLICY.judge_contract
-EXPLANATION_CONTRACT = "explain-v2"
+EXPLANATION_CONTRACT = "explain-v3"
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,7 +74,7 @@ def run_judgments(
         max_requests=max_requests,
         retries=retries,
         parser=lambda payload, identifiers: parse_judgments(
-            payload, identifiers, allowed_evidence_fields
+            payload, identifiers, allowed_evidence_fields, contract=contract
         ),
     )
 

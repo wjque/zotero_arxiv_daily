@@ -21,6 +21,7 @@ class QualityReferenceFieldRole(StrEnum):
 
     DESCRIPTIVE = "descriptive"
     POSITIVE_REFERENCE = "positive_reference"
+    EVALUATION_REFERENCE = "evaluation_reference"
     LIMITATION_CONTEXT = "limitation_context"
 
 
@@ -44,8 +45,17 @@ class QualityReferencePolicy:
             or set(roles) != set(QUALITY_REFERENCE_FIELDS)
         ):
             raise ValueError("quality reference policy is invalid")
-        if set(roles.values()) != set(QualityReferenceFieldRole):
-            raise ValueError("quality reference policy must use every field role")
+        assigned_roles = set(roles.values())
+        if (
+            QualityReferenceFieldRole.DESCRIPTIVE not in assigned_roles
+            or QualityReferenceFieldRole.LIMITATION_CONTEXT not in assigned_roles
+            or not assigned_roles
+            & {
+                QualityReferenceFieldRole.POSITIVE_REFERENCE,
+                QualityReferenceFieldRole.EVALUATION_REFERENCE,
+            }
+        ):
+            raise ValueError("quality reference policy must use required field roles")
         if self.generation_enabled and self.reference_evidence_allowed:
             raise ValueError("new quality reference policies cannot replace candidate evidence")
         if self.generation_enabled and self.descriptive_fields_sent:
@@ -84,7 +94,23 @@ class QualityReferencePolicy:
 
         descriptive = ", ".join(self.fields_for(QualityReferenceFieldRole.DESCRIPTIVE))
         positive = ", ".join(self.fields_for(QualityReferenceFieldRole.POSITIVE_REFERENCE))
+        evaluation = ", ".join(self.fields_for(QualityReferenceFieldRole.EVALUATION_REFERENCE))
         limitations = ", ".join(self.fields_for(QualityReferenceFieldRole.LIMITATION_CONTEXT))
+        positive_instruction = (
+            f"Fields {positive} are optional positive references: apply a criterion only when the "
+            "candidate's supplied public evidence directly demonstrates it; absence must never "
+            "lower a score or increase uncertainty. "
+            if positive
+            else ""
+        )
+        evaluation_instruction = (
+            f"Fields {evaluation} are evaluation references: compare the candidate against a "
+            "criterion only when supplied candidate evidence is sufficient to assess it. A "
+            "demonstrated failure may lower the relevant dimension, while unavailable or "
+            "insufficient evidence remains unknown and must not become a negative claim. "
+            if evaluation
+            else ""
+        )
         return (
             f"Interpret quality_reference only under policy {self.version}. Its support values are "
             "relative prevalence within each field, never scores, probabilities, thresholds, or "
@@ -92,10 +118,8 @@ class QualityReferencePolicy:
             f"Fields {descriptive} are descriptive context only and must never increase or "
             "decrease "
             "a dimension score or uncertainty. "
-            f"Fields {positive} are optional positive references: apply a criterion only when the "
-            "candidate's supplied public evidence directly demonstrates it; absence must never "
-            "lower "
-            "a score or increase uncertainty. "
+            f"{positive_instruction}"
+            f"{evaluation_instruction}"
             f"Field {limitations} is review context only: it never excuses missing evidence or "
             "directly changes a score, and an empty value means unspecified. Candidate-specific "
             "supplied evidence and the fixed score anchors always control the judgment. "
@@ -104,7 +128,7 @@ class QualityReferencePolicy:
         )
 
 
-_STABLE_FIELD_ROLES = (
+_V1_FIELD_ROLES = (
     ("research_problems", QualityReferenceFieldRole.DESCRIPTIVE),
     ("methodological_expectations", QualityReferenceFieldRole.POSITIVE_REFERENCE),
     ("evidence_standards", QualityReferenceFieldRole.POSITIVE_REFERENCE),
@@ -114,20 +138,35 @@ _STABLE_FIELD_ROLES = (
 LEGACY_QUALITY_REFERENCE_POLICY = QualityReferencePolicy(
     "quality-reference-policy-legacy-v1",
     "judge-v3",
-    _STABLE_FIELD_ROLES,
+    _V1_FIELD_ROLES,
     generation_enabled=False,
     reference_evidence_allowed=True,
     descriptive_fields_sent=True,
 )
-DEFAULT_QUALITY_REFERENCE_POLICY = QualityReferencePolicy(
+QUALITY_REFERENCE_POLICY_V1 = QualityReferencePolicy(
     "quality-reference-policy-v1",
     "judge-v4",
-    _STABLE_FIELD_ROLES,
+    _V1_FIELD_ROLES,
+)
+DEFAULT_QUALITY_REFERENCE_POLICY = QualityReferencePolicy(
+    "quality-reference-policy-v2",
+    "judge-v5",
+    (
+        ("research_problems", QualityReferenceFieldRole.DESCRIPTIVE),
+        ("methodological_expectations", QualityReferenceFieldRole.EVALUATION_REFERENCE),
+        ("evidence_standards", QualityReferenceFieldRole.EVALUATION_REFERENCE),
+        ("motivations", QualityReferenceFieldRole.DESCRIPTIVE),
+        ("tolerated_limitations", QualityReferenceFieldRole.LIMITATION_CONTEXT),
+    ),
 )
 LEGACY_QUALITY_PROFILE_POLICY_VERSION = LEGACY_QUALITY_REFERENCE_POLICY.version
 
 # Append-only: persisted profiles may continue selecting any previously registered policy.
-_REGISTERED_POLICIES = (LEGACY_QUALITY_REFERENCE_POLICY, DEFAULT_QUALITY_REFERENCE_POLICY)
+_REGISTERED_POLICIES = (
+    LEGACY_QUALITY_REFERENCE_POLICY,
+    QUALITY_REFERENCE_POLICY_V1,
+    DEFAULT_QUALITY_REFERENCE_POLICY,
+)
 if len({item.version for item in _REGISTERED_POLICIES}) != len(_REGISTERED_POLICIES) or len(
     {item.judge_contract for item in _REGISTERED_POLICIES}
 ) != len(_REGISTERED_POLICIES):

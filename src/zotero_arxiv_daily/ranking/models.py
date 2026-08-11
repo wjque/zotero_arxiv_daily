@@ -24,6 +24,22 @@ class ScoredCandidate:
 
 
 @dataclass(frozen=True, slots=True)
+class ScientificValueAssessment:
+    """Evidence-bounded values used only by deterministic local selection gates."""
+
+    solution_advance: float | None
+    technical_depth: float | None
+    confidence: float
+
+    def __post_init__(self) -> None:
+        values = (self.solution_advance, self.technical_depth)
+        if any(value is not None and not 0 <= value <= 1 for value in values):
+            raise ValueError("scientific value scores must be normalized")
+        if not 0 <= self.confidence <= 1:
+            raise ValueError("scientific value confidence must be normalized")
+
+
+@dataclass(frozen=True, slots=True)
 class RecommendationRecord:
     candidate: ArxivCandidate
     score: float
@@ -111,3 +127,4 @@ class RecommendationRunManifest:
     quality_profile_version: str | None = None
     quality_profile_criterion_count: int = 0
     quality_profile_feedback_event_count: int = 0
+    scientific_value_filtered_count: int = 0

@@ -23,6 +23,7 @@ from zotero_arxiv_daily.profile.quality import (
 from zotero_arxiv_daily.profile.quality_policy import (
     DEFAULT_QUALITY_REFERENCE_POLICY,
     LEGACY_QUALITY_PROFILE_POLICY_VERSION,
+    QUALITY_REFERENCE_POLICY_V1,
     get_quality_reference_policy,
 )
 from zotero_arxiv_daily.security.state import decrypt_state_bundle, encrypt_state_directory
@@ -140,6 +141,23 @@ def test_profile_versions_are_idempotent_approvable_and_reversible(tmp_path: Pat
 
     with pytest.raises(ApplicationError, match="not registered"):
         store.get("missing")
+
+
+def test_policy_v2_activation_rolls_back_to_exact_policy_v1_profile(tmp_path: Path) -> None:
+    store = QualityProfileStore(tmp_path / "quality-profile.json")
+    policy_v1 = build_quality_reference_profile(
+        (_example(),), (), policy_version=QUALITY_REFERENCE_POLICY_V1.version
+    )
+    policy_v2 = build_quality_reference_profile((_example(),), ())
+
+    assert policy_v1.version != policy_v2.version
+    assert store.register(policy_v1)
+    assert store.register(policy_v2)
+    assert store.approve(policy_v2.version).policy_version == (
+        DEFAULT_QUALITY_REFERENCE_POLICY.version
+    )
+    assert store.rollback(policy_v1.version).policy_version == QUALITY_REFERENCE_POLICY_V1.version
+    assert store.approved() == policy_v1
 
 
 def test_quality_profile_round_trips_only_inside_encrypted_state(tmp_path: Path) -> None:
