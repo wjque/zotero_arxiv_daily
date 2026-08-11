@@ -43,13 +43,16 @@ from zotero_arxiv_daily.llm.contracts import (
 from zotero_arxiv_daily.llm.preference_context import validate_preference_signals
 from zotero_arxiv_daily.llm.refinement import (
     EXPLANATION_CONTRACT,
-    JUDGE_CONTRACT,
     StructuredProvider,
     run_explanations,
     run_judgments,
 )
 from zotero_arxiv_daily.profile.models import RemoteProfile
 from zotero_arxiv_daily.profile.quality import QualityReferenceProfile
+from zotero_arxiv_daily.profile.quality_policy import (
+    DEFAULT_QUALITY_REFERENCE_POLICY,
+    get_quality_reference_policy,
+)
 from zotero_arxiv_daily.ranking.baseline import (
     BASELINE_VERSION,
     order_baseline,
@@ -451,10 +454,16 @@ def run_refined_recommendation(
     max_requests: int = 8,
     retries: int = 1,
 ) -> tuple[RecommendationSet, RecommendationRunManifest]:
-    """Run judge-v3 then final-only explain-v2 without granting model control over selection."""
+    """Run versioned judging then final-only explanation without model-controlled selection."""
 
     if not 1 <= pre_rank_limit <= 80:
         raise ValueError("pre_rank_limit must be between 1 and 80")
+    quality_policy = (
+        get_quality_reference_policy(quality_profile.policy_version)
+        if quality_profile is not None
+        else DEFAULT_QUALITY_REFERENCE_POLICY
+    )
+    judge_contract = quality_policy.judge_contract
     started = perf_counter()
     eligible = tuple(
         candidate for candidate in candidates if candidate.arxiv_id.canonical not in excluded_ids
@@ -525,27 +534,28 @@ def run_refined_recommendation(
         profile_digest,
         model,
         output_language,
-        JUDGE_CONTRACT,
+        judge_contract,
         evidence_snapshot=_records_digest(judge_records),
     )
+    judge_evidence_fields = {
+        "title",
+        "authors",
+        "categories",
+        "published",
+        "summary",
+        "method_evidence",
+        "evaluation_evidence",
+        "limitations_evidence",
+    }
+    if quality_policy.reference_evidence_allowed:
+        judge_evidence_fields.add("quality_reference")
     judgments, judge_usage = run_judgments(
         provider,
         cache,
         judge_records,
         cache_keys=judge_keys,
-        allowed_evidence_fields=frozenset(
-            {
-                "title",
-                "authors",
-                "categories",
-                "published",
-                "summary",
-                "method_evidence",
-                "evaluation_evidence",
-                "limitations_evidence",
-                "quality_reference",
-            }
-        ),
+        allowed_evidence_fields=frozenset(judge_evidence_fields),
+        contract=judge_contract,
         batch_size=judge_batch_size,
         max_request_tokens=max_request_tokens,
         max_request_bytes=max_request_bytes,
@@ -563,7 +573,10 @@ def run_refined_recommendation(
         weight_set=weight_set,
         extra_features={
             identifier: _assessment_features(
-                value, project_pages[identifier], repository_materials[identifier]
+                value,
+                project_pages[identifier],
+                repository_materials[identifier],
+                judge_contract,
             )
             for identifier, value in assessments.items()
         },
@@ -790,6 +803,7 @@ def _assessment_features(
     assessment: JudgeAssessment,
     project_page: ProjectPageEvidence,
     repository_materials: RepositoryMaterials,
+    judge_contract: str,
 ) -> tuple[NormalizedFeature, ...]:
     dimensions = dict(assessment.dimensions)
     quality_dimensions = (
@@ -812,7 +826,7 @@ def _assessment_features(
             quality,
             bool(quality_values),
             confidence if quality_values else 0.0,
-            JUDGE_CONTRACT,
+            judge_contract,
             FeatureGroup.SCIENTIFIC_QUALITY,
         ),
         _project_page_feature(project_page),

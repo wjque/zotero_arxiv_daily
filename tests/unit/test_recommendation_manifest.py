@@ -18,7 +18,13 @@ from zotero_arxiv_daily.pipeline.recommend import (
 from zotero_arxiv_daily.profile.models import RemoteProfile
 from zotero_arxiv_daily.profile.quality import (
     ApprovedQualityExample,
+    QualityCriterion,
+    QualityReferenceProfile,
     build_quality_reference_profile,
+)
+from zotero_arxiv_daily.profile.quality_policy import (
+    LEGACY_QUALITY_PROFILE_POLICY_VERSION,
+    get_quality_reference_policy,
 )
 
 
@@ -90,7 +96,7 @@ class _RefinementProvider:
 
     def complete(self, contract: str, records: list[dict[str, object]]) -> str:
         self.calls.append((contract, records))
-        if contract == "judge-v3":
+        if contract.startswith("judge-"):
             judgments = []
             for record in records:
                 score = 0.0 if record["arxiv_id"] == "2401.00004" else 0.8
@@ -323,7 +329,7 @@ def test_refined_run_judges_shortlist_and_generates_final_only_explanations(tmp_
     )
 
     assert len(result.recommendations) == 3
-    assert [contract for contract, _ in provider.calls] == ["judge-v3", "explain-v2"]
+    assert [contract for contract, _ in provider.calls] == ["judge-v4", "explain-v2"]
     assert len(provider.calls[0][1]) == 4
     assert len(provider.calls[1][1]) == 3
     assert all("relevance_signals" not in record for record in provider.calls[1][1])
@@ -347,7 +353,7 @@ def test_refined_run_judges_shortlist_and_generates_final_only_explanations(tmp_
     )
 
     assert [contract for contract, _ in provider.calls] == [
-        "judge-v3",
+        "judge-v4",
         "explain-v2",
         "explain-v2",
     ]
@@ -451,7 +457,41 @@ def test_refined_run_references_only_aggregate_approved_quality_profile(tmp_path
     judge_record = provider.calls[0][1][0]
     encoded = json.dumps(judge_record["quality_reference"])
     assert "private-source-paper-id" not in encoded
+    assert "research_problems" not in encoded
+    assert "motivations" not in encoded
     assert judge_record["quality_reference"] == quality_profile.prompt_payload()
+    assert judge_record["quality_reference"]["policy_version"] == (quality_profile.policy_version)
     assert manifest.quality_profile_version == quality_profile.version
     assert manifest.quality_profile_criterion_count == 5
     assert manifest.quality_profile_feedback_event_count == 0
+
+
+def test_legacy_quality_profile_keeps_legacy_judge_contract(tmp_path: Path) -> None:
+    provider = _RefinementProvider()
+    legacy_profile = QualityReferenceProfile(
+        "quality-profile-legacy",
+        1,
+        LEGACY_QUALITY_PROFILE_POLICY_VERSION,
+        get_quality_reference_policy(LEGACY_QUALITY_PROFILE_POLICY_VERSION).fingerprint,
+        (QualityCriterion("evaluation", 1.0),),
+        (),
+        (),
+        (),
+        (),
+        1,
+        0,
+    )
+
+    run_refined_recommendation(
+        (_candidate("2401.00001"),),
+        RemoteProfile(4, 9, ("learning",), ("cs.LG",), (), ()),
+        datetime(2026, 8, 1, tzinfo=UTC),
+        provider,
+        ProposalCache(tmp_path / "legacy-quality-profile-cache.json"),
+        model="deepseek-v4-flash",
+        output_language="en",
+        quality_profile=legacy_profile,
+    )
+
+    assert provider.calls[0][0] == "judge-v3"
+    assert provider.calls[0][1][0]["quality_reference"] == legacy_profile.prompt_payload()

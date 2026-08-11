@@ -127,3 +127,38 @@ def test_workflows_pin_node24_compatible_action_revisions() -> None:
     assert "actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d" in workflows
     assert "actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9" in workflows
     assert "actions/deploy-pages@cd2ce8fcbc39b97be8ca5fce6e763baed58fa128" in workflows
+
+
+def test_quality_profile_workflow_is_protected_private_and_non_publishing() -> None:
+    workflow = Path(".github/workflows/quality-profile.yml").read_text(encoding="utf-8")
+
+    assert "environment: production" in workflow
+    assert "group: zotero-arxiv-daily-production" in workflow
+    assert "contents: write" in workflow
+    assert "issues: read" not in workflow
+    assert "pages: write" not in workflow
+    assert "id-token: write" not in workflow
+    assert "secrets.STATE_ENCRYPTION_KEY" in workflow
+    assert "secrets.QUALITY_PROFILE_EXAMPLES" in workflow
+    assert "git worktree add --detach runtime/state FETCH_HEAD" in workflow
+    assert "state decrypt" in workflow
+    assert "state encrypt" in workflow
+    assert "quality-profile generate" in workflow
+    assert '--policy-version "$POLICY_VERSION"' in workflow
+    assert "quality-profile inspect" in workflow
+    assert 'quality-profile "$OPERATION" --version "$PROFILE_VERSION"' in workflow
+    assert "quality-profile clear-approval" in workflow
+    assert "inputs.operation != 'inspect'" in workflow
+    assert "cmp -s runtime/quality-profile.before.json runtime/quality-profile.json" in workflow
+    assert "git -C runtime/state push origin HEAD:state" in workflow
+    assert "push --force" not in workflow
+    for forbidden in (
+        "DEEPSEEK_API_KEY",
+        "recommend run",
+        "site build",
+        "upload-pages-artifact",
+        "deploy-pages",
+        "record-impressions",
+        "gh issue list",
+    ):
+        assert forbidden not in workflow

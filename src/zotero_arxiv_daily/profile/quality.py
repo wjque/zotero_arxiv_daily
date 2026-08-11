@@ -16,8 +16,15 @@ from zotero_arxiv_daily.feedback.ledger import (
     FeedbackEventType,
     FeedbackOutcome,
 )
+from zotero_arxiv_daily.profile.quality_policy import (
+    DEFAULT_QUALITY_REFERENCE_POLICY,
+    LEGACY_QUALITY_PROFILE_POLICY_VERSION,
+    get_quality_reference_policy,
+)
 
-QUALITY_PROFILE_SCHEMA_VERSION = 1
+QUALITY_PROFILE_SCHEMA_VERSION = 2
+QUALITY_PROFILE_STATE_SCHEMA_VERSION = 2
+_LEGACY_QUALITY_PROFILE_SCHEMA_VERSION = 1
 _TRAIT_ALLOWLISTS = {
     "research_problems": frozenset(
         {
@@ -95,6 +102,8 @@ class QualityCriterion:
 class QualityReferenceProfile:
     version: str
     schema_version: int
+    policy_version: str
+    policy_fingerprint: str
     research_problems: tuple[QualityCriterion, ...]
     methodological_expectations: tuple[QualityCriterion, ...]
     evidence_standards: tuple[QualityCriterion, ...]
@@ -104,8 +113,25 @@ class QualityReferenceProfile:
     explicit_feedback_event_count: int
 
     def __post_init__(self) -> None:
-        if self.schema_version != QUALITY_PROFILE_SCHEMA_VERSION or not self.version.strip():
+        if (
+            self.schema_version
+            not in {
+                _LEGACY_QUALITY_PROFILE_SCHEMA_VERSION,
+                QUALITY_PROFILE_SCHEMA_VERSION,
+            }
+            or not self.version.strip()
+        ):
             raise ValueError("quality reference profile identity is invalid")
+        policy = get_quality_reference_policy(self.policy_version)
+        if (
+            self.schema_version == _LEGACY_QUALITY_PROFILE_SCHEMA_VERSION
+            and self.policy_version != LEGACY_QUALITY_PROFILE_POLICY_VERSION
+        ):
+            raise ValueError("legacy quality reference profile policy is invalid")
+        if self.schema_version >= QUALITY_PROFILE_SCHEMA_VERSION and not policy.generation_enabled:
+            raise ValueError("quality reference profile policy is invalid for this schema")
+        if self.policy_fingerprint != policy.fingerprint:
+            raise ValueError("quality reference profile policy fingerprint is invalid")
         if min(self.approved_example_count, self.explicit_feedback_event_count) < 0:
             raise ValueError("quality reference profile counts are invalid")
         for field_name, allowed in _TRAIT_ALLOWLISTS.items():
@@ -121,24 +147,47 @@ class QualityReferenceProfile:
         return sum(len(getattr(self, field)) for field in _TRAIT_ALLOWLISTS)
 
     def prompt_payload(self) -> dict[str, object]:
-        """Return aggregates without paper IDs or feedback events crossing the boundary."""
+        """Return only non-descriptive aggregates allowed across the model boundary."""
+
+        policy = get_quality_reference_policy(self.policy_version)
+        metadata: dict[str, object] = {"version": self.version}
+        if self.schema_version >= QUALITY_PROFILE_SCHEMA_VERSION:
+            metadata.update(
+                {
+                    "policy_version": self.policy_version,
+                    "policy_fingerprint": self.policy_fingerprint,
+                }
+            )
+        return {**metadata, **self._criteria_payload(policy.model_fields)}
+
+    def inspection_payload(self) -> dict[str, object]:
+        """Return every privacy-safe aggregate for local operator review."""
 
         return {
             "version": self.version,
-            **{
-                field: [
-                    {"name": item.name, "support": item.support} for item in getattr(self, field)
-                ]
-                for field in _TRAIT_ALLOWLISTS
-            },
+            "policy_version": self.policy_version,
+            "policy_fingerprint": self.policy_fingerprint,
+            **self._criteria_payload(tuple(_TRAIT_ALLOWLISTS)),
+        }
+
+    def _criteria_payload(self, fields: tuple[str, ...]) -> dict[str, object]:
+        return {
+            field: [{"name": item.name, "support": item.support} for item in getattr(self, field)]
+            for field in fields
         }
 
 
 def build_quality_reference_profile(
-    examples: tuple[ApprovedQualityExample, ...], feedback: tuple[FeedbackEvent, ...]
+    examples: tuple[ApprovedQualityExample, ...],
+    feedback: tuple[FeedbackEvent, ...],
+    *,
+    policy_version: str = DEFAULT_QUALITY_REFERENCE_POLICY.version,
 ) -> QualityReferenceProfile:
     """Build a deterministic candidate profile from approvals and explicit outcomes only."""
 
+    policy = get_quality_reference_policy(policy_version)
+    if not policy.generation_enabled:
+        raise ValueError("quality reference policy version is unavailable for generation")
     approved = tuple(example for example in examples if example.approved)
     if not approved:
         raise ApplicationError("quality profile requires at least one explicitly approved example")
@@ -175,6 +224,8 @@ def build_quality_reference_profile(
         )
     identity = {
         "schema_version": QUALITY_PROFILE_SCHEMA_VERSION,
+        "policy_version": policy.version,
+        "policy_fingerprint": policy.fingerprint,
         "fields": {field: [asdict(item) for item in values] for field, values in fields.items()},
         "approved_example_count": len(approved),
         "explicit_feedback_event_count": len(explicit),
@@ -185,6 +236,8 @@ def build_quality_reference_profile(
     return QualityReferenceProfile(
         f"quality-profile-{digest}",
         QUALITY_PROFILE_SCHEMA_VERSION,
+        policy.version,
+        policy.fingerprint,
         fields["research_problems"],
         fields["methodological_expectations"],
         fields["evidence_standards"],
@@ -222,9 +275,24 @@ class QualityProfileStore:
     def rollback(self, version: str) -> QualityReferenceProfile:
         return self.approve(version)
 
+    def clear_approval(self) -> str | None:
+        """Remove the approval pointer while retaining immutable profile versions."""
+
+        profiles, approved = self._read()
+        if approved is None:
+            return None
+        self._write(profiles, None)
+        return approved
+
     def approved(self) -> QualityReferenceProfile | None:
         profiles, approved = self._read()
         return next((item for item in profiles if item.version == approved), None)
+
+    def get(self, version: str) -> QualityReferenceProfile:
+        profile = next((item for item in self.versions() if item.version == version), None)
+        if profile is None:
+            raise ApplicationError("quality profile version is not registered")
+        return profile
 
     def versions(self) -> tuple[QualityReferenceProfile, ...]:
         return self._read()[0]
@@ -240,7 +308,10 @@ class QualityProfileStore:
                 "profiles",
             }:
                 raise ValueError
-            if value["schema_version"] != QUALITY_PROFILE_SCHEMA_VERSION:
+            if value["schema_version"] not in {
+                _LEGACY_QUALITY_PROFILE_SCHEMA_VERSION,
+                QUALITY_PROFILE_STATE_SCHEMA_VERSION,
+            }:
                 raise ValueError
             raw = value["profiles"]
             if not isinstance(raw, list):
@@ -267,7 +338,7 @@ class QualityProfileStore:
             with os.fdopen(descriptor, "w", encoding="utf-8") as output:
                 json.dump(
                     {
-                        "schema_version": QUALITY_PROFILE_SCHEMA_VERSION,
+                        "schema_version": QUALITY_PROFILE_STATE_SCHEMA_VERSION,
                         "approved_version": approved,
                         "profiles": [_profile_payload(profile) for profile in profiles],
                     },
@@ -313,7 +384,7 @@ def _example(value: object) -> ApprovedQualityExample:
 
 
 def _profile_payload(profile: QualityReferenceProfile) -> dict[str, object]:
-    return {
+    payload: dict[str, object] = {
         "version": profile.version,
         "schema_version": profile.schema_version,
         **{
@@ -322,17 +393,29 @@ def _profile_payload(profile: QualityReferenceProfile) -> dict[str, object]:
         "approved_example_count": profile.approved_example_count,
         "explicit_feedback_event_count": profile.explicit_feedback_event_count,
     }
+    if profile.schema_version >= QUALITY_PROFILE_SCHEMA_VERSION:
+        payload["policy_version"] = profile.policy_version
+        payload["policy_fingerprint"] = profile.policy_fingerprint
+    return payload
 
 
 def _profile(value: object) -> QualityReferenceProfile:
-    fields = {
+    base_fields = {
         "version",
         "schema_version",
         *_TRAIT_ALLOWLISTS,
         "approved_example_count",
         "explicit_feedback_event_count",
     }
-    if not isinstance(value, dict) or set(value) != fields:
+    if not isinstance(value, dict):
+        raise ValueError
+    schema_version = int(value.get("schema_version", 0))
+    fields = (
+        {*base_fields, "policy_version", "policy_fingerprint"}
+        if schema_version >= QUALITY_PROFILE_SCHEMA_VERSION
+        else base_fields
+    )
+    if set(value) != fields:
         raise ValueError
     criteria: dict[str, tuple[QualityCriterion, ...]] = {}
     for field in _TRAIT_ALLOWLISTS:
@@ -348,7 +431,14 @@ def _profile(value: object) -> QualityReferenceProfile:
             raise ValueError
     return QualityReferenceProfile(
         str(value["version"]),
-        int(value["schema_version"]),
+        schema_version,
+        str(value.get("policy_version", LEGACY_QUALITY_PROFILE_POLICY_VERSION)),
+        str(
+            value.get(
+                "policy_fingerprint",
+                get_quality_reference_policy(LEGACY_QUALITY_PROFILE_POLICY_VERSION).fingerprint,
+            )
+        ),
         criteria["research_problems"],
         criteria["methodological_expectations"],
         criteria["evidence_standards"],

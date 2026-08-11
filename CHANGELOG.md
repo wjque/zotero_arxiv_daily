@@ -8,6 +8,8 @@
   graded explicitly linked GitHub implementation-material evidence without cloning or executing code.
 - Added immutable quality-reference profiles built from operator-approved structured examples and
   explicit feedback, with encrypted protected-state persistence and reversible approval pointers.
+- Added a protected manual quality-profile maintenance workflow with privacy-safe inspection,
+  separate generation and activation, encrypted fast-forward persistence, and first-use deactivation.
 - Added sub-24-hour metadata-only validation runs with privacy-safe encrypted manifests and no model,
   site build, Pages deployment, publication history, impression, or pending-state changes.
 - Added publishable schema v5 fields that report quality evidence, uncertainty, implementation
@@ -15,6 +17,10 @@
 
 ### Changed
 
+- Upgraded quality references to schema v2 and `judge-v4`. A versioned policy registry now treats
+  topic and motivation fields as local-only descriptive data, uses methodology and evidence only as
+  non-penalizing positive references, and keeps limitations as context. Schema-v1 profiles retain
+  their legacy judge contract; schema-v2 fingerprints prevent silent policy reinterpretation.
 - Activated the quality-first production weights: interest `0.40`, recency `0.05`, watched identity
   `0.10`, scientific quality `0.35`, and project/implementation evidence `0.10`.
 - Moved bounded project-page reachability into coarse screening and expanded fine screening from

@@ -11,6 +11,7 @@ import pytest
 from zotero_arxiv_daily.core.errors import ExternalServiceError
 from zotero_arxiv_daily.llm import deepseek
 from zotero_arxiv_daily.llm.deepseek import DeepSeekClient, UrlLibJsonTransport
+from zotero_arxiv_daily.profile.quality_policy import DEFAULT_QUALITY_REFERENCE_POLICY
 
 
 class _Transport:
@@ -95,6 +96,26 @@ def test_deepseek_structured_contract_uses_only_caller_supplied_records() -> Non
     }
     with pytest.raises(ValueError, match="unsupported"):
         DeepSeekClient("test-key", transport=transport).complete("other", [])
+
+
+def test_current_judge_contract_applies_versioned_non_penalizing_reference_policy() -> None:
+    transport = _Transport()
+
+    DeepSeekClient("test-key", transport=transport).complete(
+        DEFAULT_QUALITY_REFERENCE_POLICY.judge_contract,
+        [{"arxiv_id": "2401.00001", "quality_reference": {"policy_version": "test"}}],
+    )
+
+    assert transport.payload is not None
+    prompt = json.loads(transport.payload)["messages"][0]["content"]
+    assert DEFAULT_QUALITY_REFERENCE_POLICY.version in prompt
+    assert "relative prevalence within each field" in prompt
+    assert "must never increase or decrease a dimension score" in prompt
+    assert "absence must never lower a score" in prompt
+    assert "an empty value means unspecified" in prompt
+    assert "quality_reference is context, not candidate evidence" in prompt
+    allowed_fields = prompt.split("the only allowed names are ", 1)[1]
+    assert "quality_reference" not in allowed_fields
 
 
 def test_deepseek_adapter_preserves_provider_usage_metadata() -> None:

@@ -1,4 +1,4 @@
-"""Provider-neutral, failure-atomic runners for judge-v3 and explain-v2 contracts."""
+"""Provider-neutral, failure-atomic runners for versioned judge and explanation contracts."""
 
 from __future__ import annotations
 
@@ -21,6 +21,7 @@ from zotero_arxiv_daily.llm.contracts import (
     parse_explanations,
     parse_judgments,
 )
+from zotero_arxiv_daily.profile.quality_policy import DEFAULT_QUALITY_REFERENCE_POLICY
 
 
 class StructuredProvider(Protocol):
@@ -29,7 +30,7 @@ class StructuredProvider(Protocol):
     ) -> str | ProviderCompletion: ...
 
 
-JUDGE_CONTRACT = "judge-v3"
+JUDGE_CONTRACT = DEFAULT_QUALITY_REFERENCE_POLICY.judge_contract
 EXPLANATION_CONTRACT = "explain-v2"
 
 
@@ -52,6 +53,7 @@ def run_judgments(
     *,
     cache_keys: dict[str, str],
     allowed_evidence_fields: frozenset[str],
+    contract: str = JUDGE_CONTRACT,
     batch_size: int = 40,
     max_request_tokens: int = DEFAULT_REQUEST_TOKEN_LIMIT,
     max_request_bytes: int = DEFAULT_REQUEST_BYTE_LIMIT,
@@ -65,7 +67,7 @@ def run_judgments(
         cache,
         records,
         cache_keys=cache_keys,
-        contract=JUDGE_CONTRACT,
+        contract=contract,
         batch_size=batch_size,
         max_request_tokens=max_request_tokens,
         max_request_bytes=max_request_bytes,
@@ -220,7 +222,7 @@ def _parse[T](
 
 
 def _wrap(contract: str, value: str) -> str:
-    key = "judgments" if contract == JUDGE_CONTRACT else "explanations"
+    key = "judgments" if contract.startswith("judge-") else "explanations"
     return json.dumps({key: [json.loads(value)]}, separators=(",", ":"))
 
 

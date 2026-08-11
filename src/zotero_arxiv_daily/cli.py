@@ -57,6 +57,10 @@ from zotero_arxiv_daily.profile.quality import (
     build_quality_reference_profile,
     read_quality_examples,
 )
+from zotero_arxiv_daily.profile.quality_policy import (
+    DEFAULT_QUALITY_REFERENCE_POLICY,
+    quality_reference_policy_versions,
+)
 from zotero_arxiv_daily.profile.service import (
     build_cached_remote_profile,
     local_curated_item_keys,
@@ -312,6 +316,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     quality_generate.add_argument("--examples", type=Path, required=True)
     quality_generate.add_argument(
+        "--policy-version",
+        choices=quality_reference_policy_versions(),
+        default=DEFAULT_QUALITY_REFERENCE_POLICY.version,
+    )
+    quality_generate.add_argument(
         "--feedback-state", type=Path, default=Path("runtime/feedback-state.json")
     )
     quality_generate.add_argument(
@@ -327,8 +336,17 @@ def build_parser() -> argparse.ArgumentParser:
     quality_rollback.add_argument(
         "--state", type=Path, default=Path("runtime/quality-profile.json")
     )
+    quality_clear = quality_commands.add_parser(
+        "clear-approval", help="Disable the approved profile without deleting immutable versions"
+    )
+    quality_clear.add_argument("--state", type=Path, default=Path("runtime/quality-profile.json"))
     quality_list = quality_commands.add_parser("list", help="List generated profile versions")
     quality_list.add_argument("--state", type=Path, default=Path("runtime/quality-profile.json"))
+    quality_inspect = quality_commands.add_parser(
+        "inspect", help="Print one privacy-safe aggregate quality profile"
+    )
+    quality_inspect.add_argument("--version")
+    quality_inspect.add_argument("--state", type=Path, default=Path("runtime/quality-profile.json"))
     arxiv_parser = subcommands.add_parser("arxiv", help="Retrieve public arXiv candidate metadata")
     arxiv_commands = arxiv_parser.add_subparsers(dest="arxiv_command", required=True)
     arxiv_retrieve_parser = arxiv_commands.add_parser(
@@ -647,6 +665,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             quality_candidate = build_quality_reference_profile(
                 read_quality_examples(args.examples),
                 FeedbackLedgerStore(args.feedback_state).events(),
+                policy_version=args.policy_version,
             )
             registered = QualityProfileStore(args.state).register(quality_candidate)
             action = "registered" if registered else "already registered"
@@ -664,6 +683,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             print(f"quality profile approved: {quality_candidate.version}")
             return 0
+        if args.command == "quality-profile" and args.quality_profile_command == "clear-approval":
+            previous = QualityProfileStore(args.state).clear_approval()
+            suffix = f": {previous}" if previous is not None else ""
+            print(f"quality profile approval cleared{suffix}")
+            return 0
         if args.command == "quality-profile" and args.quality_profile_command == "list":
             quality_store = QualityProfileStore(args.state)
             approved_quality = quality_store.approved()
@@ -675,6 +699,32 @@ def main(argv: Sequence[str] | None = None) -> int:
                     else " "
                 )
                 print(f"{marker} {quality_candidate.version}")
+            return 0
+        if args.command == "quality-profile" and args.quality_profile_command == "inspect":
+            quality_store = QualityProfileStore(args.state)
+            inspected_quality = (
+                quality_store.get(args.version) if args.version else quality_store.approved()
+            )
+            if inspected_quality is None:
+                raise ApplicationError("no quality profile is approved")
+            approved_quality = quality_store.approved()
+            print(
+                json.dumps(
+                    {
+                        **inspected_quality.inspection_payload(),
+                        "schema_version": inspected_quality.schema_version,
+                        "approved": approved_quality is not None
+                        and approved_quality.version == inspected_quality.version,
+                        "approved_example_count": inspected_quality.approved_example_count,
+                        "explicit_feedback_event_count": (
+                            inspected_quality.explicit_feedback_event_count
+                        ),
+                        "criterion_count": inspected_quality.criterion_count,
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
             return 0
         if args.command == "arxiv" and args.arxiv_command == "retrieve":
             profile = read_remote_profile(args.profile)

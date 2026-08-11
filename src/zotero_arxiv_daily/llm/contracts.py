@@ -117,7 +117,7 @@ def parse_judgments(
     allowed_ids: frozenset[str],
     allowed_evidence_fields: frozenset[str],
 ) -> tuple[JudgeAssessment, ...]:
-    """Validate judge-v3 output without allowing it to introduce facts or identifiers."""
+    """Validate versioned judge output without allowing new facts or identifiers."""
 
     entries = _entries(payload, "judgments", allowed_ids)
     expected = {"arxiv_id", "dimensions", "uncertainty", "evidence_fields"}

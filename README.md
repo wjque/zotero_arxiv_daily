@@ -214,7 +214,7 @@ uv run zotero-arxiv-daily ranking activate-weights \
 ```
 
 `ZAD_LLM_REFINEMENT_ENABLED` is enabled in the production workflow and `.env.example` so quality
-assessment is the default path. The pipeline judges only the coarse shortlist with `judge-v3`,
+assessment is the default path. The pipeline judges only the coarse shortlist with `judge-v4`,
 applies local selection, and asks `explain-v2` for only the final papers. The judge uses fixed score
 anchors and uncertainty; explanations must name the problem, approach, claimed result, a concrete
 paper-specific contribution, and a limitation grounded in at least two supplied fields. Existing
@@ -234,14 +234,52 @@ using the default `use_v012_ranking=false` and confirm `weight_set_version` is `
 
 Quality references require an operator-reviewed JSON file whose examples contain only a public paper
 ID, `approved`, and allowlisted structured traits. Generation does not activate a profile; approval is
-a separate reversible action. Both the registry and feedback ledger remain encrypted workflow state:
+a separate reversible action. Both the registry and feedback ledger remain encrypted workflow state.
+Local maintenance commands are:
 
 ```bash
 uv run zotero-arxiv-daily quality-profile generate --examples reviewed-quality-examples.json
 uv run zotero-arxiv-daily quality-profile list
+uv run zotero-arxiv-daily quality-profile inspect --version QUALITY_PROFILE_VERSION
 uv run zotero-arxiv-daily quality-profile approve --version QUALITY_PROFILE_VERSION
 uv run zotero-arxiv-daily quality-profile rollback --version PRIOR_VERSION
+uv run zotero-arxiv-daily quality-profile clear-approval
 ```
+
+Generation uses the registered `quality-reference-policy-v1` interpretation policy by default. Use
+`--policy-version` only to select another application-registered policy. Policies assign behavior to
+whole fields rather than named papers or individual traits: research problems and motivations are
+local descriptive data and do not enter model payloads; methodology and evidence standards are
+optional positive references; tolerated limitations are non-scoring context. Relative support is
+never a score or threshold, and a missing criterion never reduces candidate quality. Policy version
+is part of each new profile's immutable identity, and its fingerprint prevents silent
+reinterpretation, so a future policy upgrade creates a separately reviewable profile and judge-cache
+namespace.
+
+Production maintenance uses the manual `quality-profile.yml` workflow, the protected `production`
+environment, and the same concurrency lock as daily publication. Store the reviewed JSON as an
+environment secret, then generate and approve it in separate runs:
+
+```bash
+gh secret set QUALITY_PROFILE_EXAMPLES --env production \
+  --repo "$ZAD_GITHUB_REPOSITORY" < runtime/reviewed-quality-examples.json
+gh workflow run quality-profile.yml --repo "$ZAD_GITHUB_REPOSITORY" -f operation=generate
+gh workflow run quality-profile.yml --repo "$ZAD_GITHUB_REPOSITORY" \
+  -f operation=approve -f version=QUALITY_PROFILE_VERSION
+gh workflow run quality-profile.yml --repo "$ZAD_GITHUB_REPOSITORY" -f operation=inspect
+```
+
+`generate` registers an unapproved immutable candidate. `inspect` is read-only and emits only safe
+aggregates. `approve` and `rollback` move the approval pointer; `clear-approval` disables quality
+references while retaining every registered version. The workflow never calls a model, builds a site,
+deploys Pages, records impressions, or reads feedback issues. Every mutation safely fast-forwards the
+encrypted `state` branch. Use `rollback` with a prior version, or `clear-approval` when the first
+activation has no prior version.
+
+The workflow's optional `policy_version` input selects an application-registered policy during
+generation. Existing schema-v1 profiles remain readable under the compatibility policy; newly
+generated profiles use schema v2 and persist their policy version explicitly. The compatibility
+policy retains `judge-v3` for existing profiles and cannot be selected for new generation.
 
 The judge receives only criterion names, normalized aggregate support, and the immutable profile
 version. Source paper IDs, Zotero content, and feedback events or prose are excluded. Private run

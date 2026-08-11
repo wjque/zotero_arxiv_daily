@@ -11,6 +11,11 @@ from zotero_arxiv_daily.core.config import AppConfig
 from zotero_arxiv_daily.evidence.models import PublicPaperEvidence
 from zotero_arxiv_daily.pipeline.recommend import package_result
 from zotero_arxiv_daily.profile.models import RemoteProfile
+from zotero_arxiv_daily.profile.quality import (
+    ApprovedQualityExample,
+    QualityProfileStore,
+    build_quality_reference_profile,
+)
 from zotero_arxiv_daily.site.models import PublishedRecommendationSet, write_published_set
 from zotero_arxiv_daily.zotero.models import ZoteroCollection
 
@@ -76,6 +81,56 @@ def test_state_commands_round_trip_validated_private_workflow_state(
         "schema_version": 2,
         "events": [],
     }
+
+
+def test_quality_profile_commands_inspect_aggregates_and_clear_approval(
+    capsys: CaptureFixture[str], tmp_path: Path
+) -> None:
+    state = tmp_path / "quality-profile.json"
+    store = QualityProfileStore(state)
+    profile = build_quality_reference_profile(
+        (
+            ApprovedQualityExample(
+                "2401.00001",
+                True,
+                ("evaluation",),
+                ("baselines", "ablations"),
+                ("held_out_evaluation",),
+                ("practical_utility",),
+                ("limited_scale",),
+            ),
+        ),
+        (),
+    )
+    store.register(profile)
+    store.approve(profile.version)
+
+    assert (
+        cli.main(
+            [
+                "quality-profile",
+                "inspect",
+                "--version",
+                profile.version,
+                "--state",
+                str(state),
+            ]
+        )
+        == 0
+    )
+    inspected = json.loads(capsys.readouterr().out)
+    assert inspected["version"] == profile.version
+    assert inspected["approved"] is True
+    assert inspected["approved_example_count"] == 1
+    assert inspected["policy_version"] == profile.policy_version
+    assert inspected["research_problems"]
+    assert inspected["motivations"]
+    assert inspected["criterion_count"] == profile.criterion_count
+    assert "2401.00001" not in json.dumps(inspected)
+
+    assert cli.main(["quality-profile", "clear-approval", "--state", str(state)]) == 0
+    assert "approval cleared" in capsys.readouterr().out
+    assert store.approved() is None
 
 
 def test_recommend_command_records_candidate_pool_degradation_in_manifest(
