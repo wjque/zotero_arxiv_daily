@@ -9,6 +9,11 @@ implementation-material evidence, approved quality-reference profiles, and safe 
 validation runs. Its immutable acceptance contract is the
 [v0.2.1 plan](docs/plans/v0.2.1-quality-first-ranking-validation.md).
 
+Development toward v0.3.0 follows the immutable
+[outcome-optimized recommendation plan](docs/plans/v0.3.0-outcome-optimized-recommendations.md).
+Its primary product metric is the number of papers explicitly judged worthwhile after reading, not
+clicks, saves, reading completion, or missing feedback.
+
 ## Requirements
 
 - Python 3.12 or newer
@@ -177,6 +182,25 @@ publication impressions are stored with display positions so later versions can 
 outcomes without treating silence as a negative label. v0.2.1 may use explicit outcomes only when an
 operator generates and approves a structured quality-reference profile. Feedback never changes
 interest topics, and no feedback prose is published or sent to the model.
+
+The v0.3 browser protocol keeps pre-reading preference, reading completion, and post-reading value as
+separate stages. `Worthwhile` and `Not worthwhile` become available only after `Read`; they remain
+editable as explicit corrections and may be submitted later. Every new action is scoped to the
+publication batch, so a repeated paper cannot move feedback between batches. Existing Issue schema
+v1 remains readable. Pending browser schema-v1 actions migrate without guessing a historical batch
+and therefore do not affect a batch total.
+
+Inspect the protected ledger locally with an aggregate-only report:
+
+```bash
+uv run zotero-arxiv-daily feedback report
+```
+
+The report includes per-batch impressions, explicit-feedback coverage, reading completions,
+worthwhile and not-worthwhile counts, post-reading outcome coverage among completed reads, and the
+worthwhile rate among explicitly labeled reads. It contains no paper identifiers, action timestamps,
+profile terms, Zotero content, or feedback prose. A zero or missing denominator is reported
+explicitly; silence is never converted into a negative outcome.
 
 ## Ranking evaluation and refinement
 

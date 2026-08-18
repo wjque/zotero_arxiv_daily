@@ -9,6 +9,12 @@ from pytest import CaptureFixture, MonkeyPatch
 from zotero_arxiv_daily import cli
 from zotero_arxiv_daily.core.config import AppConfig
 from zotero_arxiv_daily.evidence.models import PublicPaperEvidence
+from zotero_arxiv_daily.feedback.ledger import (
+    FeedbackEvent,
+    FeedbackEventType,
+    FeedbackLedgerStore,
+    FeedbackOutcome,
+)
 from zotero_arxiv_daily.pipeline.recommend import package_result
 from zotero_arxiv_daily.profile.models import RemoteProfile
 from zotero_arxiv_daily.profile.quality import (
@@ -52,6 +58,55 @@ def test_site_build_command_uses_protected_output_by_default(
     assert exit_code == 0
     assert "encrypted site built" in capsys.readouterr().out
     assert (output_path / "data/recommendations.enc.json").is_file()
+
+
+def test_feedback_report_emits_only_aggregate_explicit_outcomes(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], tmp_path: Path
+) -> None:
+    state = tmp_path / "feedback.json"
+    store = FeedbackLedgerStore(state)
+    shown_at = datetime(2026, 8, 1, tzinfo=UTC)
+    store.record_impressions("published-one", ("paper-one",), shown_at)
+    store.ingest(
+        (
+            FeedbackEvent(
+                "read-one",
+                FeedbackEventType.OUTCOME,
+                "paper-one",
+                datetime(2026, 8, 1, 1, tzinfo=UTC),
+                FeedbackOutcome.READ,
+            ),
+            FeedbackEvent(
+                "worthwhile-one",
+                FeedbackEventType.OUTCOME,
+                "paper-one",
+                datetime(2026, 8, 1, 2, tzinfo=UTC),
+                FeedbackOutcome.WORTHWHILE,
+            ),
+        )
+    )
+    monkeypatch.setattr(cli, "load_config", lambda **_: AppConfig())
+
+    assert cli.main(["feedback", "report", "--state", str(state)]) == 0
+
+    report = json.loads(capsys.readouterr().out)
+    assert report == {
+        "schema_version": 1,
+        "batches": [
+            {
+                "batch_id": "published-one",
+                "explicit_feedback_count": 1,
+                "explicit_feedback_coverage": 1.0,
+                "impression_count": 1,
+                "not_worthwhile_read_count": 0,
+                "post_reading_outcome_count": 1,
+                "post_reading_outcome_coverage": 1.0,
+                "reading_completion_count": 1,
+                "worthwhile_given_explicit_outcome": 1.0,
+                "worthwhile_read_count": 1,
+            }
+        ],
+    }
 
 
 def test_state_commands_round_trip_validated_private_workflow_state(

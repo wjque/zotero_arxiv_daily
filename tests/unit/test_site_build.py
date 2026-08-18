@@ -72,6 +72,10 @@ def test_public_site_is_explicit_and_contains_accessible_feedback_controls(tmp_p
     assert 'type="date"' not in html
     assert 'allDates:"All dates"' in js
     assert "item=>item.published_on))].sort().reverse()" in js
+    assert "schema_version:2,feedback" in js
+    assert 'worthwhile:"Worthwhile"' in js
+    assert 'legacyBatchId="legacy-unattributed"' in js
+    assert 'stage==="post_reading"&&!entry.reading' in js
 
 
 def test_site_config_exposes_degraded_candidate_pool_freshness(tmp_path: Path) -> None:

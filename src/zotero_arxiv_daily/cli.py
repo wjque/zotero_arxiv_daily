@@ -153,6 +153,12 @@ def build_parser() -> argparse.ArgumentParser:
     feedback_impressions_parser.add_argument(
         "--state", type=Path, default=Path("runtime/feedback-state.json")
     )
+    feedback_report_parser = feedback_commands.add_parser(
+        "report", help="Report privacy-safe explicit outcomes by published batch"
+    )
+    feedback_report_parser.add_argument(
+        "--state", type=Path, default=Path("runtime/feedback-state.json")
+    )
     corpus_parser = subcommands.add_parser(
         "corpus", help="Import a local curated Zotero collection into the evaluation ledger"
     )
@@ -496,6 +502,21 @@ def main(argv: Sequence[str] | None = None) -> int:
                 occurred_at,
             )
             print(f"feedback impressions: {added} recorded, {duplicates} duplicates")
+            return 0
+        if args.command == "feedback" and args.feedback_command == "report":
+            print(
+                json.dumps(
+                    {
+                        "schema_version": 1,
+                        "batches": [
+                            asdict(metrics)
+                            for metrics in FeedbackLedgerStore(args.state).batch_outcomes()
+                        ],
+                    },
+                    sort_keys=True,
+                    separators=(",", ":"),
+                )
+            )
             return 0
         if args.command == "corpus" and args.corpus_command == "import-zotero":
             store = ZoteroStore(args.database or Path(config.local_database_path))

@@ -1,5 +1,29 @@
 # Changelog
 
+## v0.3.0 - Unreleased
+
+### Added
+
+- Added batch-scoped browser feedback for separate pre-reading preference, reading completion, and
+  explicit worthwhile or not-worthwhile post-reading outcomes, including delayed submissions,
+  append-only corrections, and idempotent repeated submissions.
+- Added a privacy-safe local outcome report with per-batch worthwhile-read counts, reading
+  completions, post-reading coverage, worthwhile rates among explicitly labeled reads, and explicit
+  feedback coverage without interpreting missing outcomes as negative.
+
+### Changed
+
+- Retain submitted browser feedback state while exporting only newly changed stages, and isolate
+  feedback for a repeated paper by publication batch.
+- Migrate pending browser schema-v1 actions without guessing a historical batch.
+
+### Compatibility and Security
+
+- Existing feedback Issue schema v1 and persisted feedback-ledger schemas remain readable. New
+  external identifiers and action sequences are bounded and validated before atomic ingestion.
+- Missing feedback remains unknown. Raw feedback and paper identities remain in encrypted protected
+  state; aggregate reports expose only allowlisted counts and ratios.
+
 ## v0.2.1 - 2026-08-18
 
 ### Added

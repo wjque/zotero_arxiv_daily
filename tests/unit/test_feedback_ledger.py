@@ -106,3 +106,97 @@ def test_repeated_paper_outcome_uses_matching_batch_impression(tmp_path: Path) -
 
     assert rates[1].explicit_outcome_count == 0
     assert rates[3].explicit_outcome_count == 1
+
+
+def test_batch_outcomes_keep_missing_and_pre_reading_feedback_distinct(tmp_path: Path) -> None:
+    store = FeedbackLedgerStore(tmp_path / "feedback.json")
+    store.record_impressions("batch-a", ("a", "b"), _NOW)
+    store.ingest(
+        (
+            FeedbackEvent(
+                "interested-a",
+                FeedbackEventType.OUTCOME,
+                "a",
+                _NOW + timedelta(hours=1),
+                FeedbackOutcome.INTERESTED,
+            ),
+        )
+    )
+
+    metrics = store.batch_outcomes()[0]
+
+    assert metrics.impression_count == 2
+    assert metrics.explicit_feedback_count == 1
+    assert metrics.explicit_feedback_coverage == 0.5
+    assert metrics.reading_completion_count == 0
+    assert metrics.post_reading_outcome_count == 0
+    assert metrics.worthwhile_read_count == 0
+    assert metrics.post_reading_outcome_coverage is None
+    assert metrics.worthwhile_given_explicit_outcome is None
+
+
+def test_batch_outcomes_do_not_treat_missing_post_reading_feedback_as_negative(
+    tmp_path: Path,
+) -> None:
+    store = FeedbackLedgerStore(tmp_path / "feedback.json")
+    store.record_impressions("batch-a", ("a", "b"), _NOW)
+    store.ingest(
+        (
+            FeedbackEvent(
+                "read-a",
+                FeedbackEventType.OUTCOME,
+                "a",
+                _NOW + timedelta(hours=1),
+                FeedbackOutcome.READ,
+            ),
+            FeedbackEvent(
+                "worthwhile-a",
+                FeedbackEventType.OUTCOME,
+                "a",
+                _NOW + timedelta(hours=2),
+                FeedbackOutcome.WORTHWHILE,
+            ),
+            FeedbackEvent(
+                "read-b",
+                FeedbackEventType.OUTCOME,
+                "b",
+                _NOW + timedelta(hours=1),
+                FeedbackOutcome.READ,
+            ),
+        )
+    )
+
+    metrics = store.batch_outcomes()[0]
+
+    assert metrics.reading_completion_count == 2
+    assert metrics.post_reading_outcome_count == 1
+    assert metrics.post_reading_outcome_coverage == 0.5
+    assert metrics.worthwhile_given_explicit_outcome == 1.0
+    assert metrics.not_worthwhile_read_count == 0
+
+
+def test_batch_outcomes_attribute_delayed_feedback_to_the_latest_impression(
+    tmp_path: Path,
+) -> None:
+    store = FeedbackLedgerStore(tmp_path / "feedback.json")
+    store.record_impressions("batch-a", ("a",), _NOW)
+    store.record_impressions("batch-b", ("a",), _NOW + timedelta(days=1))
+    store.ingest(
+        (
+            FeedbackEvent(
+                "worthwhile-b",
+                FeedbackEventType.OUTCOME,
+                "a",
+                _NOW + timedelta(days=1, hours=1),
+                FeedbackOutcome.WORTHWHILE,
+            ),
+        )
+    )
+
+    first, second = store.batch_outcomes()
+
+    assert first.batch_id == "batch-a"
+    assert first.worthwhile_read_count == 0
+    assert second.batch_id == "batch-b"
+    assert second.worthwhile_read_count == 1
+    assert second.reading_completion_count == 1
