@@ -102,6 +102,7 @@ def test_metadata_validation_branch_cannot_publish_or_call_a_model() -> None:
     )[0]
 
     assert "arxiv retrieve" in validation
+    assert "controlled-shadow" not in workflow
     assert "validation record" in validation
     assert "state encrypt" in validation
     for forbidden in (

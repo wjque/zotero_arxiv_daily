@@ -4,9 +4,13 @@ import json
 from datetime import UTC, datetime
 from pathlib import Path
 
+import pytest
 from pytest import CaptureFixture, MonkeyPatch
 
 from zotero_arxiv_daily import cli
+from zotero_arxiv_daily.arxiv.discovery import DiscoveryQuery
+from zotero_arxiv_daily.arxiv.models import RetrievalCheckpoint, RetrievalResult
+from zotero_arxiv_daily.arxiv.storage import ArxivStateStore
 from zotero_arxiv_daily.core.config import AppConfig
 from zotero_arxiv_daily.evidence.models import PublicPaperEvidence
 from zotero_arxiv_daily.feedback.ledger import (
@@ -16,7 +20,7 @@ from zotero_arxiv_daily.feedback.ledger import (
     FeedbackOutcome,
 )
 from zotero_arxiv_daily.pipeline.recommend import package_result
-from zotero_arxiv_daily.profile.models import RemoteProfile
+from zotero_arxiv_daily.profile.models import PreferenceFacet, RemoteProfile
 from zotero_arxiv_daily.profile.quality import (
     ApprovedQualityExample,
     QualityProfileStore,
@@ -37,6 +41,107 @@ def test_doctor_command_returns_configuration_exit_code_without_secret_output(
     assert exit_code == 2
     assert "ZAD_DEEPSEEK_API_KEY" in captured.out
     assert "configured" not in captured.out
+
+
+def test_arxiv_retrieval_defaults_to_released_discovery_policy() -> None:
+    args = cli.build_parser().parse_args(["arxiv", "retrieve", "--profile", "profile.json"])
+
+    assert args.discovery_mode == "v0.2.1"
+
+
+def test_controlled_discovery_refuses_the_production_candidate_state(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "load_config", lambda **_: AppConfig())
+
+    exit_code = cli.main(
+        [
+            "arxiv",
+            "retrieve",
+            "--profile",
+            "profile.json",
+            "--discovery-mode",
+            "controlled-shadow",
+        ]
+    )
+
+    assert exit_code == 4
+    assert "requires a separate --state path" in capsys.readouterr().out
+
+
+def test_arxiv_retrieval_rejects_empty_profile_before_network(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "load_config", lambda **_: AppConfig())
+    monkeypatch.setattr(
+        cli,
+        "read_remote_profile",
+        lambda _: RemoteProfile(1, 1, (), (), (), ()),
+    )
+    monkeypatch.setattr(
+        cli,
+        "retrieve",
+        lambda *_args, **_kwargs: pytest.fail("retrieval must not run for an empty profile"),
+    )
+
+    exit_code = cli.main(["arxiv", "retrieve", "--profile", "profile.json"])
+
+    assert exit_code == 4
+    assert "requires at least one core category" in capsys.readouterr().out
+
+
+def test_controlled_discovery_uses_profile_facets_and_separate_shadow_state(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], tmp_path: Path
+) -> None:
+    shadow_state = tmp_path / "controlled-shadow.json"
+    captured_stores: list[ArxivStateStore] = []
+    captured_queries: list[tuple[DiscoveryQuery, ...]] = []
+    monkeypatch.setattr(cli, "load_config", lambda **_: AppConfig())
+    monkeypatch.setattr(
+        cli,
+        "read_remote_profile",
+        lambda _: RemoteProfile(
+            4,
+            1,
+            (),
+            ("cs.LG",),
+            (),
+            (),
+            preference_facets=(PreferenceFacet("task", "retrieval", 1.0, 1.0, ("local-derived",)),),
+        ),
+    )
+
+    def retrieve_stub(
+        _client: object,
+        store: ArxivStateStore,
+        queries: tuple[DiscoveryQuery, ...],
+        now: datetime,
+    ) -> RetrievalResult:
+        captured_stores.append(store)
+        captured_queries.append(queries)
+        return RetrievalResult((), RetrievalCheckpoint(now), 6, False, None, 6, 2, 1)
+
+    monkeypatch.setattr(cli, "retrieve", retrieve_stub)
+
+    exit_code = cli.main(
+        [
+            "arxiv",
+            "retrieve",
+            "--profile",
+            "profile.json",
+            "--state",
+            str(shadow_state),
+            "--discovery-mode",
+            "controlled-shadow",
+        ]
+    )
+
+    assert exit_code == 0
+    assert captured_stores[0].path == shadow_state
+    queries = captured_queries[0]
+    assert [query.category for query in queries][-2:] == ["cs.IR", "cs.DB"]
+    assert all(query.required_facets == ("retrieval",) for query in queries[-2:])
+    assert "1 bridge candidates, 6 queries (2 bridge), 6 requests" in capsys.readouterr().out
 
 
 def test_site_build_command_uses_protected_output_by_default(

@@ -10,12 +10,17 @@
 - Added a privacy-safe local outcome report with per-batch worthwhile-read counts, reading
   completions, post-reading coverage, worthwhile rates among explicitly labeled reads, and explicit
   feedback coverage without interpreting missing outcomes as negative.
+- Added deterministic, bounded cross-category discovery for local shadow evaluation, including
+  synthetic bridge-paper coverage, local facet acceptance, hard query and candidate budgets, and
+  atomic fallback to the previous usable pool.
 
 ### Changed
 
 - Retain submitted browser feedback state while exporting only newly changed stages, and isolate
   feedback for a repeated paper by publication batch.
 - Migrate pending browser schema-v1 actions without guessing a historical batch.
+- Keep the released v0.2.1 category path as the production default while requiring controlled
+  cross-category runs to use a separate candidate-state file.
 
 ### Compatibility and Security
 
@@ -23,6 +28,9 @@
   external identifiers and action sequences are bounded and validated before atomic ingestion.
 - Missing feedback remains unknown. Raw feedback and paper identities remain in encrypted protected
   state; aggregate reports expose only allowlisted counts and ratios.
+- Cross-category arXiv requests contain only public category names and date intervals. Protected
+  profile facets remain local, the public-candidate state schema is unchanged, and controlled shadow
+  state can be removed without migration.
 
 ## v0.2.1 - 2026-08-18
 

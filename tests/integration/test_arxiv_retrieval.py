@@ -1,12 +1,19 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from zotero_arxiv_daily.arxiv.client import ArxivClient, TransientArxivError
+from zotero_arxiv_daily.arxiv.discovery import (
+    DiscoveryFacet,
+    DiscoveryQuery,
+    category_queries,
+    plan_discovery_queries,
+)
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate, ArxivId, RetrievalCheckpoint
 from zotero_arxiv_daily.arxiv.retrieval import retrieve
 from zotero_arxiv_daily.arxiv.storage import ArxivStateStore
@@ -51,12 +58,14 @@ def test_client_retries_only_transient_transport_failures() -> None:
 
 
 class CandidateClient:
-    def __init__(self, pages: list[tuple[ArxivCandidate, ...] | Exception]) -> None:
-        self.pages = pages
+    def __init__(self, pages: Sequence[tuple[ArxivCandidate, ...] | Exception]) -> None:
+        self.pages = list(pages)
         self.search_queries: list[str] = []
+        self.maximums: list[int] = []
 
     def query(self, search_query: str, start: int, maximum: int) -> tuple[ArxivCandidate, ...]:
         self.search_queries.append(search_query)
+        self.maximums.append(maximum)
         value = self.pages.pop(0)
         if isinstance(value, Exception):
             raise value
@@ -83,7 +92,13 @@ def test_retrieval_deduplicates_revisions_and_commits_only_after_success(tmp_pat
     older = _candidate(1, now - timedelta(days=1))
     newer = _candidate(2, now)
 
-    result = retrieve(CandidateClient([(older, newer)]), store, ("cs.LG",), now, page_size=100)
+    result = retrieve(
+        CandidateClient([(older, newer)]),
+        store,
+        category_queries(("cs.LG",)),
+        now,
+        page_size=100,
+    )
 
     assert len(result.candidates) == 1
     assert result.candidates[0].arxiv_id.revision == 2
@@ -99,7 +114,7 @@ def test_failed_retrieval_preserves_the_previous_checkpoint(tmp_path: Path) -> N
         retrieve(
             CandidateClient([ExternalServiceError("timeout")]),
             store,
-            ("cs.LG",),
+            category_queries(("cs.LG",)),
             previous + timedelta(days=1),
         )
 
@@ -125,7 +140,13 @@ def test_retrieval_paginates_until_an_short_page(tmp_path: Path) -> None:
         "summary",
     )
 
-    result = retrieve(CandidateClient([(first, second), ()]), store, ("cs.LG",), now, page_size=2)
+    result = retrieve(
+        CandidateClient([(first, second), ()]),
+        store,
+        category_queries(("cs.LG",)),
+        now,
+        page_size=2,
+    )
 
     assert result.request_count == 2
     assert len(result.candidates) == 2
@@ -137,7 +158,12 @@ def test_empty_increment_returns_retained_historical_candidate_pool(tmp_path: Pa
     historical = _candidate(1, previous)
     store.commit(RetrievalCheckpoint(previous), (historical,))
 
-    result = retrieve(CandidateClient([()]), store, ("cs.LG",), previous + timedelta(days=1))
+    result = retrieve(
+        CandidateClient([()]),
+        store,
+        category_queries(("cs.LG",)),
+        previous + timedelta(days=1),
+    )
 
     assert result.candidates == (historical,)
     assert store.candidates() == (historical,)
@@ -150,7 +176,7 @@ def test_empty_legacy_pool_triggers_bounded_seven_day_backfill(tmp_path: Path) -
     now = previous + timedelta(days=1)
     client = CandidateClient([(_candidate(1, previous),)])
 
-    result = retrieve(client, store, ("cs.LG",), now)
+    result = retrieve(client, store, category_queries(("cs.LG",)), now)
 
     assert "submittedDate:[202607260000 TO 202608020000]" in client.search_queries[0]
     assert len(result.candidates) == 1
@@ -223,7 +249,7 @@ def test_transient_outage_uses_recent_pool_without_advancing_checkpoint(tmp_path
     result = retrieve(
         CandidateClient([ExternalServiceError("timeout")]),
         store,
-        ("cs.LG",),
+        category_queries(("cs.LG",)),
         previous + timedelta(days=1),
     )
 
@@ -233,3 +259,267 @@ def test_transient_outage_uses_recent_pool_without_advancing_checkpoint(tmp_path
     assert store.retrieval_status()[0] is True
     assert result.degraded_reason == "timeout"
     assert store.retrieval_status()[1] == "timeout"
+
+
+def test_controlled_discovery_recalls_declared_bridge_paper_without_remote_facets(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 20, tzinfo=UTC)
+    core = ("cs.LG",)
+    baseline_queries = category_queries(("cs.LG", "cs.AI", "cs.NE", "stat.ML"))
+    baseline_client = CandidateClient([()] * len(baseline_queries))
+    baseline = retrieve(
+        baseline_client,
+        ArxivStateStore(tmp_path / "baseline.json"),
+        baseline_queries,
+        now,
+    )
+    bridge = ArxivCandidate(
+        ArxivId("2608.00001", 1),
+        "Reliable dense retrieval for long-horizon agents",
+        ("Ada",),
+        ("cs.IR",),
+        now,
+        now,
+        "https://arxiv.org/abs/2608.00001",
+        "https://arxiv.org/pdf/2608.00001",
+        "A retrieval benchmark for agent error propagation.",
+    )
+    unrelated = ArxivCandidate(
+        ArxivId("2608.00002", 1),
+        "Database storage layout",
+        ("Turing",),
+        ("cs.IR",),
+        now,
+        now,
+        "https://arxiv.org/abs/2608.00002",
+        "https://arxiv.org/pdf/2608.00002",
+        "A public systems paper without the declared task.",
+    )
+    queries = plan_discovery_queries(core, (DiscoveryFacet("task", "retrieval", 1.0, 1.0),))
+    pages = [(bridge, unrelated) if query.category == "cs.IR" else () for query in queries]
+    client = CandidateClient(pages)
+
+    expanded = retrieve(client, ArxivStateStore(tmp_path / "expanded.json"), queries, now)
+
+    assert baseline.candidates == ()
+    assert [candidate.arxiv_id.canonical for candidate in expanded.candidates] == ["2608.00001"]
+    assert expanded.bridge_candidate_count == 1
+    assert expanded.bridge_query_count == 2
+    assert all("retrieval" not in search_query for search_query in client.search_queries)
+    assert all("retrieval" not in search_query for search_query in baseline_client.search_queries)
+
+
+def test_partial_bridge_failure_falls_back_to_previous_usable_pool(tmp_path: Path) -> None:
+    store = ArxivStateStore(tmp_path / "arxiv-state.json")
+    previous_at = datetime(2026, 8, 19, tzinfo=UTC)
+    previous = _candidate(1, previous_at, "2608.00003")
+    fresh = _candidate(1, previous_at + timedelta(days=1), "2608.00004")
+    store.commit(RetrievalCheckpoint(previous_at), (previous,))
+    queries = (
+        DiscoveryQuery("cs.LG"),
+        DiscoveryQuery("cs.IR", ("retrieval",)),
+    )
+
+    result = retrieve(
+        CandidateClient([(fresh,), ExternalServiceError("bridge timeout")]),
+        store,
+        queries,
+        previous_at + timedelta(days=1),
+    )
+
+    assert result.degraded is True
+    assert result.candidates == (previous,)
+    assert result.request_count == 2
+    assert store.checkpoint() == RetrievalCheckpoint(previous_at)
+    assert store.candidates() == (previous,)
+
+
+def test_duplicate_across_category_and_bridge_queries_keeps_the_newest_revision(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 8, 20, tzinfo=UTC)
+    older = _candidate(1, now - timedelta(hours=1), "2608.00005")
+    newer_source = _candidate(2, now, "2608.00005")
+    newer = ArxivCandidate(
+        newer_source.arxiv_id,
+        "Retrieval across scientific collections",
+        newer_source.authors,
+        ("cs.IR",),
+        newer_source.published,
+        newer_source.updated,
+        newer_source.abstract_url,
+        newer_source.pdf_url,
+        "A retrieval evaluation.",
+    )
+
+    result = retrieve(
+        CandidateClient([(older,), (newer,)]),
+        ArxivStateStore(tmp_path / "deduplicated.json"),
+        (
+            DiscoveryQuery("cs.LG"),
+            DiscoveryQuery("cs.IR", ("retrieval",)),
+        ),
+        now,
+    )
+
+    assert len(result.candidates) == 1
+    assert result.candidates[0].arxiv_id.revision == 2
+    assert result.bridge_candidate_count == 0
+
+
+def test_candidate_order_is_stable_for_equal_timestamps(tmp_path: Path) -> None:
+    now = datetime(2026, 8, 20, tzinfo=UTC)
+    lower = _candidate(1, now, "2608.00040")
+    higher = _candidate(1, now, "2608.00041")
+
+    first = retrieve(
+        CandidateClient([(lower, higher)]),
+        ArxivStateStore(tmp_path / "first.json"),
+        category_queries(("cs.LG",)),
+        now,
+    )
+    second = retrieve(
+        CandidateClient([(higher, lower)]),
+        ArxivStateStore(tmp_path / "second.json"),
+        category_queries(("cs.LG",)),
+        now,
+    )
+
+    expected = ["2608.00041", "2608.00040"]
+    assert [candidate.arxiv_id.canonical for candidate in first.candidates] == expected
+    assert [candidate.arxiv_id.canonical for candidate in second.candidates] == expected
+
+
+def test_empty_and_excessive_query_plans_fail_before_network_or_state_mutation(
+    tmp_path: Path,
+) -> None:
+    client = CandidateClient([])
+    store = ArxivStateStore(tmp_path / "arxiv-state.json")
+    now = datetime(2026, 8, 20, tzinfo=UTC)
+
+    with pytest.raises(ValueError, match="at least one retrieval query"):
+        retrieve(client, store, (), now)
+    with pytest.raises(ValueError, match="deterministic boundary"):
+        retrieve(
+            client,
+            store,
+            tuple(DiscoveryQuery(f"cs.X{index}") for index in range(17)),
+            now,
+        )
+
+    assert client.search_queries == []
+    assert not store.path.exists()
+
+
+def test_bridge_candidate_and_request_budgets_are_hard_limits(tmp_path: Path) -> None:
+    now = datetime(2026, 8, 20, tzinfo=UTC)
+    queries = (
+        DiscoveryQuery("cs.LG"),
+        DiscoveryQuery("cs.IR", ("retrieval",)),
+        DiscoveryQuery("cs.DB", ("retrieval",)),
+        DiscoveryQuery("cs.RO", ("reinforcement-learning",)),
+        DiscoveryQuery("cs.SE", ("machine-learning",)),
+    )
+    base_page = tuple(_candidate(1, now, f"2608.{index:05d}") for index in range(3))
+    bridge_pages = [
+        (_candidate(1, now, "2608.00010"),),
+        (_candidate(1, now, "2608.00011"),),
+    ]
+    pages: list[tuple[ArxivCandidate, ...]] = [
+        base_page,
+        *bridge_pages,
+    ]
+    pages[1:] = [
+        tuple(
+            ArxivCandidate(
+                candidate.arxiv_id,
+                "Retrieval benchmark",
+                candidate.authors,
+                ("cs.IR",),
+                candidate.published,
+                candidate.updated,
+                candidate.abstract_url,
+                candidate.pdf_url,
+                "retrieval evaluation",
+            )
+            for candidate in page
+        )
+        for page in pages[1:]
+    ]
+    client = CandidateClient(pages)
+
+    result = retrieve(
+        client,
+        ArxivStateStore(tmp_path / "bounded.json"),
+        queries,
+        now,
+        candidate_ceiling=5,
+        bridge_candidate_ceiling=2,
+        page_size=100,
+    )
+
+    assert len(result.candidates) == 5
+    assert result.bridge_candidate_count == 2
+    assert result.request_count == 3
+    assert client.maximums == [3, 1, 1]
+
+
+def test_provider_cannot_exceed_requested_page_size(tmp_path: Path) -> None:
+    now = datetime(2026, 8, 20, tzinfo=UTC)
+    client = CandidateClient(
+        [
+            (
+                _candidate(1, now, "2608.00020"),
+                _candidate(1, now, "2608.00021"),
+            )
+        ]
+    )
+
+    with pytest.raises(ExternalServiceError, match="more candidates than requested"):
+        retrieve(
+            client,
+            ArxivStateStore(tmp_path / "bounded.json"),
+            category_queries(("cs.LG",)),
+            now,
+            candidate_ceiling=1,
+        )
+
+    assert client.maximums == [1]
+
+
+def test_malformed_provider_metadata_uses_previous_usable_pool(tmp_path: Path) -> None:
+    store = ArxivStateStore(tmp_path / "arxiv-state.json")
+    previous_at = datetime(2026, 8, 19, tzinfo=UTC)
+    previous = _candidate(1, previous_at, "2608.00030")
+    store.commit(RetrievalCheckpoint(previous_at), (previous,))
+
+    result = retrieve(
+        CandidateClient([ExternalServiceError("arXiv returned malformed Atom XML")]),
+        store,
+        category_queries(("cs.LG",)),
+        previous_at + timedelta(days=1),
+    )
+
+    assert result.degraded is True
+    assert result.candidates == (previous,)
+    assert store.checkpoint() == RetrievalCheckpoint(previous_at)
+
+
+def test_retrieval_stops_at_the_logical_request_ceiling(tmp_path: Path) -> None:
+    now = datetime(2026, 8, 20, tzinfo=UTC)
+    client = CandidateClient([(_candidate(1, now, f"2608.{index:05d}"),) for index in range(10)])
+
+    result = retrieve(
+        client,
+        ArxivStateStore(tmp_path / "bounded.json"),
+        category_queries(("cs.LG",)),
+        now,
+        candidate_ceiling=100,
+        page_size=1,
+        request_ceiling=3,
+    )
+
+    assert result.request_count == 3
+    assert len(result.candidates) == 3
+    assert client.maximums == [1, 1, 1]
