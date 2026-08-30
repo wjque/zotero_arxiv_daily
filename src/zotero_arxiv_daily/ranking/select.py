@@ -9,7 +9,12 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
-from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity, normalize_identity
+from zotero_arxiv_daily.profile.models import PreferenceFacet, RemoteServingProfile
+from zotero_arxiv_daily.ranking.interest import (
+    protected_interest_match,
+    serving_profile_key,
+    watched_identity_match,
+)
 from zotero_arxiv_daily.ranking.models import (
     RecommendationRecord,
     ScientificValueAssessment,
@@ -63,12 +68,13 @@ class SelectionPolicy:
 
 def pre_rank(
     candidates: tuple[ArxivCandidate, ...],
-    profile: RemoteProfile,
+    profile: RemoteServingProfile,
     now: datetime,
     *,
     author_bonus: float = 0.75,
     institution_bonus: float = 0.5,
     identity_bonus_cap: float = 1.0,
+    profile_feature_key: str | None = None,
     weight_set: WeightSet = DEFAULT_WEIGHT_SET,
     extra_features: Mapping[str, tuple[NormalizedFeature, ...]] | None = None,
 ) -> tuple[ScoredCandidate, ...]:
@@ -77,39 +83,42 @@ def pre_rank(
     terms = frozenset(profile.topics)
     core = frozenset(profile.core_categories)
     adjacent = frozenset(profile.adjacent_categories)
+    matching_key = serving_profile_key(profile, profile_feature_key)
     scored: list[ScoredCandidate] = []
     for candidate in candidates:
-        words = set(_WORDS.findall((candidate.title + " " + candidate.summary).casefold()))
+        candidate_text = candidate.title + " " + candidate.summary
+        words = set(_WORDS.findall(candidate_text.casefold()))
         lexical = min(len(words & terms) / max(len(terms), 1), 1.0)
         source = _source(candidate.categories, core, adjacent)
         category = {"core": 1.0, "adjacent": 0.6, "exploration": 0.2}[source]
         age = max((now.astimezone(UTC) - candidate.published).total_seconds() / 86400, 0.0)
         recency = max(0.0, 1.0 - age / 14)
         candidate_key = candidate.arxiv_id.canonical
-        author_match = _matches_any(candidate.authors, profile.watched_authors)
-        institution_match = _matches_any(candidate.affiliations, profile.watched_institutions)
+        author_match = watched_identity_match(
+            candidate.authors,
+            profile.watched_authors,
+            profile.watched_author_digests,
+            matching_key,
+            namespace="author",
+        )
+        institution_match = watched_identity_match(
+            candidate.affiliations,
+            profile.watched_institutions,
+            profile.watched_institution_digests,
+            matching_key,
+            namespace="institution",
+        )
         watched_author = author_bonus if author_match else 0.0
         watched_institution = institution_bonus if institution_match else 0.0
         watched_author = min(watched_author, identity_bonus_cap)
         watched_institution = min(
             watched_institution, max(0.0, identity_bonus_cap - watched_author)
         )
-        facet_match = _facet_match(words, profile)
         features = (
-            NormalizedFeature(
-                "lexical", lexical, True, 1.0, "local-profile", FeatureGroup.INTEREST
-            ),
-            NormalizedFeature(
-                "category", category, True, 1.0, "local-profile", FeatureGroup.INTEREST
-            ),
-            NormalizedFeature(
-                "facet",
-                facet_match,
-                bool(profile.preference_facets),
-                1.0 if profile.preference_facets else 0.0,
-                "local-profile",
-                FeatureGroup.INTEREST,
-            ),
+            _protected_interest_features(candidate_text, category, words, profile, matching_key)
+            if matching_key is not None
+            else _legacy_interest_features(lexical, category, words, profile)
+        ) + (
             NormalizedFeature(
                 "recency",
                 recency,
@@ -122,8 +131,20 @@ def pre_rank(
             NormalizedFeature(
                 "identity",
                 watched_author + watched_institution,
-                bool(profile.watched_authors or profile.watched_institutions),
-                1.0 if profile.watched_authors or profile.watched_institutions else 0.0,
+                bool(
+                    profile.watched_authors
+                    or profile.watched_institutions
+                    or profile.watched_author_digests
+                    or profile.watched_institution_digests
+                ),
+                1.0
+                if (
+                    profile.watched_authors
+                    or profile.watched_institutions
+                    or profile.watched_author_digests
+                    or profile.watched_institution_digests
+                )
+                else 0.0,
                 "watchlist",
                 FeatureGroup.IDENTITY,
             ),
@@ -152,9 +173,84 @@ def pre_rank(
     return tuple(sorted(scored, key=lambda item: (-item.score, item.candidate.arxiv_id.canonical)))
 
 
-def _matches_any(values: tuple[str, ...], identities: tuple[WatchedIdentity, ...]) -> bool:
-    normalized_values = {normalize_identity(value) for value in values if value.strip()}
-    return any(bool(normalized_values & identity.normalized_names) for identity in identities)
+def _legacy_interest_features(
+    lexical: float,
+    category: float,
+    words: set[str],
+    profile: RemoteServingProfile,
+) -> tuple[NormalizedFeature, ...]:
+    facet_match = _facet_match(words, profile.preference_facets)
+    return (
+        NormalizedFeature("lexical", lexical, True, 1.0, "local-profile", FeatureGroup.INTEREST),
+        NormalizedFeature("category", category, True, 1.0, "local-profile", FeatureGroup.INTEREST),
+        NormalizedFeature(
+            "facet",
+            facet_match,
+            bool(profile.preference_facets),
+            1.0 if profile.preference_facets else 0.0,
+            "local-profile",
+            FeatureGroup.INTEREST,
+        ),
+    )
+
+
+def _protected_interest_features(
+    candidate_text: str,
+    category: float,
+    words: set[str],
+    profile: RemoteServingProfile,
+    key: str,
+) -> tuple[NormalizedFeature, ...]:
+    match = protected_interest_match(candidate_text, profile, key)
+    long_term_lexical_available = any(
+        feature.long_term_weight > 0 for feature in profile.lexical_features
+    )
+    recent_lexical_available = any(
+        feature.recent_weight > 0 for feature in profile.lexical_features
+    )
+    return (
+        NormalizedFeature(
+            "long_term_lexical",
+            match.long_term_lexical,
+            long_term_lexical_available,
+            1.0 if long_term_lexical_available else 0.0,
+            profile.feature_hash_version or "unknown",
+            FeatureGroup.INTEREST,
+        ),
+        NormalizedFeature(
+            "recent_lexical",
+            match.recent_lexical,
+            recent_lexical_available,
+            1.0 if recent_lexical_available else 0.0,
+            profile.feature_hash_version or "unknown",
+            FeatureGroup.INTEREST,
+        ),
+        NormalizedFeature("category", category, True, 1.0, "local-profile", FeatureGroup.INTEREST),
+        NormalizedFeature(
+            "long_term_facet",
+            _facet_match(words, profile.long_term_facets),
+            bool(profile.long_term_facets),
+            1.0 if profile.long_term_facets else 0.0,
+            "controlled-facet-v1",
+            FeatureGroup.INTEREST,
+        ),
+        NormalizedFeature(
+            "recent_facet",
+            _facet_match(words, profile.recent_facets),
+            bool(profile.recent_facets),
+            1.0 if profile.recent_facets else 0.0,
+            "controlled-facet-v1",
+            FeatureGroup.INTEREST,
+        ),
+        NormalizedFeature(
+            "prototype",
+            match.prototype,
+            bool(profile.interest_prototypes),
+            1.0 if profile.interest_prototypes else 0.0,
+            profile.feature_hash_version or "unknown",
+            FeatureGroup.INTEREST,
+        ),
+    )
 
 
 def select_diverse(
@@ -257,16 +353,16 @@ def _source(categories: tuple[str, ...], core: frozenset[str], adjacent: frozens
     return "exploration"
 
 
-def _facet_match(words: set[str], profile: RemoteProfile) -> float:
+def _facet_match(words: set[str], facets: tuple[PreferenceFacet, ...]) -> float:
     canonical_words = frozenset(
         token for word in words for token in word.split("-") if len(token) >= 3
     )
-    facets = []
-    for facet in profile.preference_facets:
+    matches = []
+    for facet in facets:
         facet_terms = _facet_tokens(facet.value)
         if facet_terms and facet_terms <= canonical_words:
-            facets.append(facet)
-    return min(sum(facet.score * facet.confidence for facet in facets) / 3, 1.0)
+            matches.append(facet)
+    return min(sum(facet.score * facet.confidence for facet in matches) / 3, 1.0)
 
 
 def _merge_features(
@@ -298,15 +394,22 @@ def _score_features(
 
 
 def _group_value(group: FeatureGroup, features: list[NormalizedFeature]) -> float:
-    importance = (
-        {
-            "lexical": 0.55,
-            "category": 0.3,
-            "facet": 0.15,
-        }
-        if group is FeatureGroup.INTEREST
-        else {}
-    )
+    if group is FeatureGroup.INTEREST:
+        names = {feature.name for feature in features}
+        importance = (
+            {
+                "long_term_lexical": 0.25,
+                "recent_lexical": 0.15,
+                "category": 0.20,
+                "long_term_facet": 0.10,
+                "recent_facet": 0.10,
+                "prototype": 0.20,
+            }
+            if "long_term_lexical" in names
+            else {"lexical": 0.55, "category": 0.30, "facet": 0.15}
+        )
+    else:
+        importance = {}
     weighted = [(feature, importance.get(feature.name, 1.0)) for feature in features]
     denominator = sum(weight for _, weight in weighted)
     return (

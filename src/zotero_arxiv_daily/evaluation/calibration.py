@@ -18,7 +18,7 @@ from zotero_arxiv_daily.evaluation.models import (
     RankingMetrics,
 )
 from zotero_arxiv_daily.evaluation.offline import compare_rankings, evaluate_snapshot_ranking
-from zotero_arxiv_daily.profile.models import RemoteProfile
+from zotero_arxiv_daily.profile.models import RemoteServingProfile
 from zotero_arxiv_daily.ranking.baseline import BASELINE_VERSION, score_baseline
 from zotero_arxiv_daily.ranking.select import pre_rank
 from zotero_arxiv_daily.ranking.weights import FeatureGroup, WeightSet
@@ -59,17 +59,28 @@ class ShadowReport:
 
 def run_shadow_evaluation(
     candidates: tuple[ArxivCandidate, ...],
-    profile: RemoteProfile,
+    profile: RemoteServingProfile,
     snapshot: EvaluationSnapshot,
     now: datetime,
     *,
     split: str = "temporal-holdout",
     weight_set: WeightSet,
+    profile_feature_key: str | None = None,
 ) -> ShadowReport:
     """Evaluate scoring only; this function cannot modify runtime or production state."""
 
-    baseline_ranked = _ranked(score_baseline(candidates, profile, now))
-    candidate_ranked = _ranked(pre_rank(candidates, profile, now, weight_set=weight_set))
+    baseline_ranked = _ranked(
+        score_baseline(candidates, profile, now, profile_feature_key=profile_feature_key)
+    )
+    candidate_ranked = _ranked(
+        pre_rank(
+            candidates,
+            profile,
+            now,
+            weight_set=weight_set,
+            profile_feature_key=profile_feature_key,
+        )
+    )
     baseline_at_20 = evaluate_snapshot_ranking(baseline_ranked, snapshot, split, k=20)
     candidate_at_20 = evaluate_snapshot_ranking(candidate_ranked, snapshot, split, k=20)
     baseline_at_60 = evaluate_snapshot_ranking(baseline_ranked, snapshot, split, k=60)
@@ -91,6 +102,7 @@ def run_shadow_evaluation(
             split,
             weight_set,
             candidate_at_20,
+            profile_feature_key,
         )
         for group, value in weight_set.group_weights.items()
         if value > 0
@@ -159,12 +171,13 @@ def _ranked(scored: tuple[object, ...]) -> tuple[RankedPaper, ...]:
 def _ablation(
     group: FeatureGroup,
     candidates: tuple[ArxivCandidate, ...],
-    profile: RemoteProfile,
+    profile: RemoteServingProfile,
     snapshot: EvaluationSnapshot,
     now: datetime,
     split: str,
     weight_set: WeightSet,
     candidate_metrics: RankingMetrics,
+    profile_feature_key: str | None,
 ) -> FeatureAblation:
     ranked = _ranked(
         pre_rank(
@@ -172,6 +185,7 @@ def _ablation(
             profile,
             now,
             weight_set=weight_set.without(group),
+            profile_feature_key=profile_feature_key,
         )
     )
     metrics = evaluate_snapshot_ranking(ranked, snapshot, split, k=20)

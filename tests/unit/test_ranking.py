@@ -7,9 +7,17 @@ from datetime import UTC, datetime, timedelta
 import pytest
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate, ArxivId
-from zotero_arxiv_daily.core.errors import ExternalServiceError
+from zotero_arxiv_daily.core.errors import ConfigurationError, ExternalServiceError
 from zotero_arxiv_daily.llm.contracts import parse_proposals
-from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity
+from zotero_arxiv_daily.profile.build import project_serving_profile
+from zotero_arxiv_daily.profile.models import (
+    LocalInterestProfile,
+    PreferenceFacet,
+    ProtectedInterestPrototype,
+    RemoteServingProfile,
+    WatchedIdentity,
+)
+from zotero_arxiv_daily.profile.protection import protected_feature_digest
 from zotero_arxiv_daily.ranking.models import RecommendationRecord, ScientificValueAssessment
 from zotero_arxiv_daily.ranking.select import (
     order_recommendations,
@@ -18,6 +26,8 @@ from zotero_arxiv_daily.ranking.select import (
     select_diverse,
 )
 from zotero_arxiv_daily.ranking.weights import DEFAULT_WEIGHT_SET, FeatureGroup, NormalizedFeature
+
+_FEATURE_KEY = "test-profile-feature-key-0000000000000001"
 
 
 def _candidate(identifier: str, category: str, title: str, age: int = 1) -> ArxivCandidate:
@@ -50,7 +60,7 @@ def _proposal_payload(
 
 
 def test_local_ranking_is_inspectable_and_allows_fewer_than_target() -> None:
-    profile = RemoteProfile(1, 1, ("learning",), ("cs.LG",), (), ("learning",))
+    profile = RemoteServingProfile(1, 1, ("learning",), ("cs.LG",), (), ("learning",))
     scored = pre_rank(
         (_candidate("2401.00001", "cs.LG", "Learning"),), profile, datetime(2026, 8, 1, tzinfo=UTC)
     )
@@ -113,7 +123,7 @@ def test_model_output_field_order_does_not_change_validation() -> None:
 
 
 def test_feedback_is_not_a_v020_ranking_feature() -> None:
-    profile = RemoteProfile(1, 1, ("learning",), ("cs.LG",), (), ())
+    profile = RemoteServingProfile(1, 1, ("learning",), ("cs.LG",), (), ())
     item = _candidate("2401.00001", "cs.LG", "Learning")
 
     scored = pre_rank((item,), profile, datetime(2026, 8, 1, tzinfo=UTC))
@@ -125,7 +135,7 @@ def test_feedback_is_not_a_v020_ranking_feature() -> None:
 
 
 def test_watched_identity_matches_are_exact_inspectable_and_capped() -> None:
-    profile = RemoteProfile(
+    profile = RemoteServingProfile(
         2,
         1,
         ("learning",),
@@ -159,7 +169,7 @@ def test_watched_identity_matches_are_exact_inspectable_and_capped() -> None:
 
 
 def test_watched_author_substring_does_not_match() -> None:
-    profile = RemoteProfile(
+    profile = RemoteServingProfile(
         2,
         1,
         (),
@@ -187,6 +197,95 @@ def test_watched_author_substring_does_not_match() -> None:
         ]
         == 0
     )
+
+
+def test_protected_profile_matches_long_recent_and_anonymous_paper_interests() -> None:
+    local = LocalInterestProfile(
+        2,
+        1,
+        (("learning", 4.0), ("retrieval", 2.0)),
+        (("retrieval", 3.0),),
+        (("cs.LG", 1.0, "test"),),
+        2,
+        (PreferenceFacet("task", "retrieval", 0.8, 1.0, ("test",)),),
+        (PreferenceFacet("task", "retrieval", 1.0, 1.0, ("test",)),),
+    )
+    base = project_serving_profile(local, _FEATURE_KEY)
+    profile = replace(
+        base,
+        interest_prototypes=(
+            ProtectedInterestPrototype(
+                (protected_feature_digest("retrieval", _FEATURE_KEY, namespace="lexical"),)
+            ),
+        ),
+    )
+    matching = _candidate("2401.00001", "cs.LG", "Retrieval learning")
+    unrelated = _candidate("2401.00002", "cs.LG", "Unrelated geometry")
+
+    scored = pre_rank(
+        (unrelated, matching),
+        profile,
+        datetime(2026, 8, 1, tzinfo=UTC),
+        profile_feature_key=_FEATURE_KEY,
+    )
+    matching_components = dict(scored[0].components)
+
+    assert scored[0].candidate.arxiv_id.canonical == "2401.00001"
+    assert matching_components["long_term_lexical"] > 0
+    assert matching_components["recent_lexical"] > 0
+    assert matching_components["prototype"] == 1
+    assert matching_components["recent_facet"] > 0
+    assert "lexical" not in matching_components
+
+
+def test_protected_profile_rejects_missing_or_mismatched_matching_key() -> None:
+    local = LocalInterestProfile(2, 1, (("learning", 1.0),), (), (), 1)
+    profile = project_serving_profile(local, _FEATURE_KEY)
+    candidate = _candidate("2401.00001", "cs.LG", "Learning")
+
+    with pytest.raises(ConfigurationError, match="32 UTF-8 bytes"):
+        pre_rank((candidate,), profile, datetime(2026, 8, 1, tzinfo=UTC))
+    with pytest.raises(ConfigurationError, match="does not match"):
+        pre_rank(
+            (candidate,),
+            profile,
+            datetime(2026, 8, 1, tzinfo=UTC),
+            profile_feature_key="wrong-profile-feature-key-00000000000000001",
+        )
+
+
+def test_protected_watchlist_matches_exact_identity_without_exposing_its_name() -> None:
+    local = LocalInterestProfile(2, 1, (("learning", 1.0),), (), (), 1)
+    base = project_serving_profile(local, _FEATURE_KEY)
+    profile = replace(
+        base,
+        watched_author_digests=(
+            protected_feature_digest("yann lecun", _FEATURE_KEY, namespace="author"),
+        ),
+    )
+    exact = replace(_candidate("2401.00001", "cs.LG", "Learning"), authors=("Yann LeCun",))
+    substring = replace(_candidate("2401.00002", "cs.LG", "Learning"), authors=("Yann LeCun Jr",))
+
+    exact_components = dict(
+        pre_rank(
+            (exact,),
+            profile,
+            datetime(2026, 8, 1, tzinfo=UTC),
+            profile_feature_key=_FEATURE_KEY,
+        )[0].components
+    )
+    substring_components = dict(
+        pre_rank(
+            (substring,),
+            profile,
+            datetime(2026, 8, 1, tzinfo=UTC),
+            profile_feature_key=_FEATURE_KEY,
+        )[0].components
+    )
+
+    assert exact_components["watched_author"] == 0.75
+    assert substring_components["watched_author"] == 0
+    assert "yann" not in json.dumps(profile, default=str).casefold()
 
 
 def test_final_order_is_relevance_first_then_quality_and_stable_ties() -> None:
@@ -234,7 +333,7 @@ def test_final_order_is_relevance_first_then_quality_and_stable_ties() -> None:
 
 
 def test_normalized_ranker_preserves_core_adjacent_and_exploration_sources() -> None:
-    profile = RemoteProfile(1, 1, ("learning",), ("cs.LG",), ("cs.AI",), ())
+    profile = RemoteServingProfile(1, 1, ("learning",), ("cs.LG",), ("cs.AI",), ())
     scored = pre_rank(
         (
             _candidate("2401.00001", "cs.LG", "Core learning"),
@@ -254,7 +353,7 @@ def test_normalized_ranker_preserves_core_adjacent_and_exploration_sources() -> 
 
 
 def test_unknown_extra_evidence_is_excluded_instead_of_becoming_a_zero_score() -> None:
-    profile = RemoteProfile(1, 1, ("learning",), ("cs.LG",), (), ())
+    profile = RemoteServingProfile(1, 1, ("learning",), ("cs.LG",), (), ())
     candidate = _candidate("2401.00001", "cs.LG", "Learning")
 
     baseline = pre_rank((candidate,), profile, datetime(2026, 8, 1, tzinfo=UTC))[0]
@@ -280,7 +379,7 @@ def test_unknown_extra_evidence_is_excluded_instead_of_becoming_a_zero_score() -
 
 
 def test_local_value_gates_reject_supported_incremental_work_but_preserve_unknowns() -> None:
-    profile = RemoteProfile(1, 1, ("learning",), ("cs.LG",), (), ())
+    profile = RemoteServingProfile(1, 1, ("learning",), ("cs.LG",), (), ())
     candidates = tuple(
         _candidate(f"2401.{index:05d}", "cs.LG", f"Learning {title}")
         for index, title in enumerate(("alpha", "beta", "gamma", "delta"), start=1)
@@ -303,7 +402,7 @@ def test_local_value_gates_reject_supported_incremental_work_but_preserve_unknow
 
 
 def test_quality_first_contributions_use_declared_available_group_weights() -> None:
-    profile = RemoteProfile(1, 1, ("learning",), ("cs.LG",), (), ())
+    profile = RemoteServingProfile(1, 1, ("learning",), ("cs.LG",), (), ())
     candidate = _candidate("2401.00001", "cs.LG", "Learning")
     scored = pre_rank(
         (candidate,),
@@ -340,7 +439,7 @@ def test_quality_first_contributions_use_declared_available_group_weights() -> N
 def test_facet_matching_normalizes_hyphenated_and_spaced_labels() -> None:
     from zotero_arxiv_daily.profile.models import PreferenceFacet
 
-    profile = RemoteProfile(
+    profile = RemoteServingProfile(
         4,
         1,
         ("learning",),

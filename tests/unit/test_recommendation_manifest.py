@@ -16,7 +16,8 @@ from zotero_arxiv_daily.pipeline.recommend import (
     run_recommendation,
     run_refined_recommendation,
 )
-from zotero_arxiv_daily.profile.models import RemoteProfile
+from zotero_arxiv_daily.profile.build import project_serving_profile
+from zotero_arxiv_daily.profile.models import LocalInterestProfile, RemoteServingProfile
 from zotero_arxiv_daily.profile.quality import (
     ApprovedQualityExample,
     QualityCriterion,
@@ -30,7 +31,7 @@ from zotero_arxiv_daily.profile.quality_policy import (
 
 
 def test_manifest_contains_only_counts_and_budget_metadata() -> None:
-    profile = RemoteProfile(1, 9, (), (), (), ())
+    profile = RemoteServingProfile(1, 9, (), (), (), ())
     result, manifest = package_result(
         (),
         profile,
@@ -68,9 +69,11 @@ def _candidate(identifier: str) -> ArxivCandidate:
 class _Provider:
     def __init__(self) -> None:
         self.calls = 0
+        self.records: list[dict[str, object]] = []
 
     def propose(self, candidates: list[dict[str, object]]) -> str:
         self.calls += 1
+        self.records.extend(candidates)
         return json.dumps(
             {
                 "proposals": [
@@ -178,7 +181,7 @@ class _PaperSectionTransport:
 
 
 def test_fully_suppressed_input_creates_empty_batch_without_model_call(tmp_path: Path) -> None:
-    profile = RemoteProfile(1, 9, ("learning",), ("cs.LG",), (), ())
+    profile = RemoteServingProfile(1, 9, ("learning",), ("cs.LG",), (), ())
     now = datetime(2026, 8, 1, tzinfo=UTC)
 
     result, manifest = run_recommendation(
@@ -198,7 +201,7 @@ def test_fully_suppressed_input_creates_empty_batch_without_model_call(tmp_path:
 
 
 def test_baseline_rollback_uses_frozen_ranker_and_marks_manifest(tmp_path: Path) -> None:
-    profile = RemoteProfile(1, 9, ("learning", "methods"), ("cs.LG",), (), ())
+    profile = RemoteServingProfile(1, 9, ("learning", "methods"), ("cs.LG",), (), ())
     now = datetime(2026, 8, 1, tzinfo=UTC)
     provider = _Provider()
 
@@ -219,10 +222,47 @@ def test_baseline_rollback_uses_frozen_ranker_and_marks_manifest(tmp_path: Path)
     assert manifest.model_requests == 1
 
 
+def test_protected_profile_scores_remotely_without_entering_the_model_payload(
+    tmp_path: Path,
+) -> None:
+    feature_key = "test-profile-feature-key-0000000000000001"
+    profile = project_serving_profile(
+        LocalInterestProfile(
+            2,
+            9,
+            (("confidential-neologism", 2.0), ("learning", 1.0)),
+            (("confidential-neologism", 1.0),),
+            (("cs.LG", 1.0, "test"),),
+            1,
+        ),
+        feature_key,
+    )
+    provider = _Provider()
+
+    run_recommendation(
+        (_candidate("2401.00001"),),
+        profile,
+        datetime(2026, 8, 1, tzinfo=UTC),
+        provider,
+        ProposalCache(tmp_path / "protected-profile-cache.json"),
+        prompt_version="v5",
+        model="deepseek-v4-flash",
+        profile_feature_key=feature_key,
+    )
+    payload = json.dumps(provider.records)
+
+    assert provider.calls == 1
+    assert feature_key not in payload
+    assert "confidential-neologism" not in payload
+    assert profile.feature_key_verifier is not None
+    assert profile.feature_key_verifier not in payload
+    assert all(feature.digest not in payload for feature in profile.lexical_features)
+
+
 def test_recommendation_run_reuses_validated_cache_and_excludes_known_papers(
     tmp_path: Path,
 ) -> None:
-    profile = RemoteProfile(1, 9, ("learning",), ("cs.LG",), (), ())
+    profile = RemoteServingProfile(1, 9, ("learning",), ("cs.LG",), (), ())
     provider = _Provider()
     cache = ProposalCache(tmp_path / "proposals.json")
     now = datetime(2026, 8, 1, tzinfo=UTC)
@@ -260,7 +300,7 @@ def test_recommendation_run_reuses_validated_cache_and_excludes_known_papers(
 
 
 def test_v020_selection_has_no_feedback_input(tmp_path: Path) -> None:
-    profile = RemoteProfile(1, 9, ("learning",), ("cs.LG",), (), ())
+    profile = RemoteServingProfile(1, 9, ("learning",), ("cs.LG",), (), ())
     provider = _Provider()
     now = datetime(2026, 8, 1, tzinfo=UTC)
     candidates = tuple(
@@ -289,7 +329,7 @@ def test_v020_selection_has_no_feedback_input(tmp_path: Path) -> None:
 
 
 def test_candidate_revision_invalidates_cached_proposal(tmp_path: Path) -> None:
-    profile = RemoteProfile(1, 9, ("learning",), ("cs.LG",), (), ())
+    profile = RemoteServingProfile(1, 9, ("learning",), ("cs.LG",), (), ())
     provider = _Provider()
     cache = ProposalCache(tmp_path / "proposals.json")
     now = datetime(2026, 8, 1, tzinfo=UTC)
@@ -321,7 +361,7 @@ def test_candidate_revision_invalidates_cached_proposal(tmp_path: Path) -> None:
 
 
 def test_refined_run_judges_shortlist_and_generates_final_only_explanations(tmp_path: Path) -> None:
-    profile = RemoteProfile(4, 9, ("learning",), ("cs.LG",), (), ())
+    profile = RemoteServingProfile(4, 9, ("learning",), ("cs.LG",), (), ())
     provider = _RefinementProvider()
     cache = ProposalCache(tmp_path / "refinement-cache.json")
     now = datetime(2026, 8, 1, tzinfo=UTC)
@@ -397,7 +437,7 @@ def test_refined_run_filters_evidence_supported_incremental_solution(tmp_path: P
 
     result, manifest = run_refined_recommendation(
         candidates,
-        RemoteProfile(4, 9, ("learning",), ("cs.LG",), (), ()),
+        RemoteServingProfile(4, 9, ("learning",), ("cs.LG",), (), ()),
         datetime(2026, 8, 1, tzinfo=UTC),
         provider,
         ProposalCache(tmp_path / "value-gate-cache.json"),
@@ -413,7 +453,7 @@ def test_refined_run_filters_evidence_supported_incremental_solution(tmp_path: P
 
 
 def test_refined_ranking_adds_reachable_abstract_project_page_evidence(tmp_path: Path) -> None:
-    profile = RemoteProfile(4, 9, ("learning",), ("cs.LG",), (), ())
+    profile = RemoteServingProfile(4, 9, ("learning",), ("cs.LG",), (), ())
     provider = _RefinementProvider()
     now = datetime(2026, 8, 1, tzinfo=UTC)
     without_page = replace(
@@ -451,7 +491,7 @@ def test_explanation_receives_method_and_evaluation_without_limitation_fallback(
 
     run_refined_recommendation(
         (_candidate("2401.00001"),),
-        RemoteProfile(4, 9, ("learning",), ("cs.LG",), (), ()),
+        RemoteServingProfile(4, 9, ("learning",), ("cs.LG",), (), ()),
         datetime(2026, 8, 1, tzinfo=UTC),
         provider,
         ProposalCache(tmp_path / "critical-assessment-cache.json"),
@@ -469,7 +509,7 @@ def test_explanation_receives_method_and_evaluation_without_limitation_fallback(
 
 
 def test_refined_manifest_records_measured_usage_and_context_mode(tmp_path: Path) -> None:
-    profile = RemoteProfile(4, 9, ("learning",), ("cs.LG",), (), ())
+    profile = RemoteServingProfile(4, 9, ("learning",), ("cs.LG",), (), ())
     provider = _MeasuredRefinementProvider()
     now = datetime(2026, 8, 1, tzinfo=UTC)
     candidates = tuple(
@@ -500,7 +540,7 @@ def test_refined_manifest_records_measured_usage_and_context_mode(tmp_path: Path
 
 
 def test_refined_run_references_only_aggregate_approved_quality_profile(tmp_path: Path) -> None:
-    interest_profile = RemoteProfile(4, 9, ("learning",), ("cs.LG",), (), ())
+    interest_profile = RemoteServingProfile(4, 9, ("learning",), ("cs.LG",), (), ())
     provider = _RefinementProvider()
     now = datetime(2026, 8, 1, tzinfo=UTC)
     quality_profile = build_quality_reference_profile(
@@ -560,7 +600,7 @@ def test_legacy_quality_profile_keeps_legacy_judge_contract(tmp_path: Path) -> N
 
     run_refined_recommendation(
         (_candidate("2401.00001"),),
-        RemoteProfile(4, 9, ("learning",), ("cs.LG",), (), ()),
+        RemoteServingProfile(4, 9, ("learning",), ("cs.LG",), (), ()),
         datetime(2026, 8, 1, tzinfo=UTC),
         provider,
         ProposalCache(tmp_path / "legacy-quality-profile-cache.json"),
