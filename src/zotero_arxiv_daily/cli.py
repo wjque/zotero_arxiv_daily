@@ -12,6 +12,11 @@ from pathlib import Path
 from zotero_arxiv_daily import __version__
 from zotero_arxiv_daily.arxiv.categories import expand_one_hop
 from zotero_arxiv_daily.arxiv.client import ArxivClient
+from zotero_arxiv_daily.arxiv.discovery import (
+    DiscoveryFacet,
+    category_queries,
+    plan_discovery_queries,
+)
 from zotero_arxiv_daily.arxiv.models import RetrievalCheckpoint
 from zotero_arxiv_daily.arxiv.retrieval import retrieve
 from zotero_arxiv_daily.arxiv.storage import ArxivStateStore
@@ -361,6 +366,12 @@ def build_parser() -> argparse.ArgumentParser:
     arxiv_retrieve_parser.add_argument("--profile", type=Path, required=True)
     arxiv_retrieve_parser.add_argument(
         "--state", type=Path, default=Path("runtime/arxiv-state.json")
+    )
+    arxiv_retrieve_parser.add_argument(
+        "--discovery-mode",
+        choices=("v0.2.1", "controlled-shadow"),
+        default="v0.2.1",
+        help="Keep released discovery or run controlled coverage in a separate shadow state",
     )
     recommend_parser = subcommands.add_parser(
         "recommend", help="Generate validated recommendations"
@@ -748,12 +759,39 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             return 0
         if args.command == "arxiv" and args.arxiv_command == "retrieve":
+            if (
+                args.discovery_mode == "controlled-shadow"
+                and args.state.resolve() == Path("runtime/arxiv-state.json").resolve()
+            ):
+                raise ApplicationError(
+                    "controlled-shadow discovery requires a separate --state path"
+                )
             profile = read_remote_profile(args.profile)
-            categories = profile.core_categories + expand_one_hop(profile.core_categories)
+            if args.discovery_mode == "controlled-shadow":
+                queries = plan_discovery_queries(
+                    profile.core_categories,
+                    tuple(
+                        DiscoveryFacet(facet.kind, facet.value, facet.score, facet.confidence)
+                        for facet in profile.preference_facets
+                    ),
+                )
+            else:
+                queries = category_queries(
+                    profile.core_categories + expand_one_hop(profile.core_categories)
+                )
+            if not queries:
+                raise ApplicationError("arXiv discovery requires at least one core category")
             retrieval = retrieve(
-                ArxivClient(), ArxivStateStore(args.state), categories, datetime.now(UTC)
+                ArxivClient(), ArxivStateStore(args.state), queries, datetime.now(UTC)
             )
-            print(f"arXiv retrieval complete: {len(retrieval.candidates)} candidates")
+            print(
+                f"arXiv retrieval complete ({args.discovery_mode}): "
+                f"{len(retrieval.candidates)} candidates, "
+                f"{retrieval.bridge_candidate_count} bridge candidates, "
+                f"{retrieval.planned_query_count} queries "
+                f"({retrieval.bridge_query_count} bridge), "
+                f"{retrieval.request_count} requests"
+            )
             return 0
         if args.command == "recommend" and args.recommend_command == "run":
             if not config.deepseek_api_key:

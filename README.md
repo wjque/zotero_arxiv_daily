@@ -125,6 +125,30 @@ derived digest cache entries rather than regenerating them. URL/domain fragments
 `zad:`/`ranking-reason:` feedback tags are excluded from interest terms, so review labels cannot
 silently become recommendation topics.
 
+## Controlled candidate-coverage shadow
+
+The normal CLI and scheduled workflow retain the released v0.2.1 discovery path: core arXiv
+categories plus fixed one-hop adjacent categories. To inspect v0.3 cross-category coverage without
+changing the production candidate pool, run the controlled mode with a separate ignored state file:
+
+```bash
+uv run zotero-arxiv-daily arxiv retrieve \
+  --profile runtime/remote-profile.json \
+  --state runtime/arxiv-state.controlled-shadow.json \
+  --discovery-mode controlled-shadow
+```
+
+The command reports total candidates, locally accepted bridge candidates, planned queries, bridge
+queries, and logical requests. Controlled planning uses only allowlisted, sufficiently strong domain,
+method, and task facets. It sends arXiv only a public category and date interval; facet values remain
+local and filter the returned public title and abstract. Hard limits allow at most 4 bridge categories,
+16 total categories, 32 logical requests, a 1,000-paper fetched pool, and 200 bridge papers. A partial
+provider failure discards the partial run and reuses a recent usable pool when one exists.
+
+Do not use the production `runtime/arxiv-state.json` path for this mode; the CLI rejects it. The
+scheduled workflow does not enable controlled discovery. Production activation remains subject to
+the v0.3 policy comparison and explicit operator approval.
+
 ## Local curated evaluation corpus
 
 The optional curated corpus is a local-only, evolving source of explicit judgments. It is not sent

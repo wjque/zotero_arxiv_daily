@@ -40,3 +40,6 @@ class RetrievalResult:
     request_count: int
     degraded: bool = False
     degraded_reason: str | None = None
+    planned_query_count: int = 0
+    bridge_query_count: int = 0
+    bridge_candidate_count: int = 0
