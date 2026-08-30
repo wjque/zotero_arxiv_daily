@@ -204,3 +204,34 @@ def test_written_report_is_owner_only_and_free_of_paper_identifiers(tmp_path: Pa
     assert json.loads(payload)["schema_version"] == WORTHWHILE_REPORT_SCHEMA_VERSION
     assert json.loads(payload)["policy_version"] == DEFAULT_WORTHWHILE_POLICY.version
     assert "2408.00000" not in payload
+
+
+def test_partial_prediction_coverage_is_reported_as_not_comparable(tmp_path: Path) -> None:
+    store = FeedbackLedgerStore(tmp_path / "feedback.json")
+    store.record_impressions("batch-old", ("2408.00001",), _NOW)
+    store.record_impressions("batch-new", ("2408.00002",), _NOW + timedelta(days=1))
+
+    report = run_worthwhile_evaluation(
+        store.batch_outcomes(), predictions={"batch-new": (_estimate("2408.00002", 0.3),)}
+    )
+
+    assert report.predicted_worthwhile_reads == pytest.approx(0.3)
+    assert "predicted totals cover only some batches" in " ".join(report.warnings)
+    assert "no batch prediction was supplied" not in " ".join(report.warnings)
+
+
+def test_full_prediction_coverage_reports_no_comparability_warning(tmp_path: Path) -> None:
+    store = FeedbackLedgerStore(tmp_path / "feedback.json")
+    store.record_impressions("batch-a", ("2408.00001",), _NOW)
+    store.record_impressions("batch-b", ("2408.00002",), _NOW + timedelta(days=1))
+
+    report = run_worthwhile_evaluation(
+        store.batch_outcomes(),
+        predictions={
+            "batch-a": (_estimate("2408.00001", 0.3),),
+            "batch-b": (_estimate("2408.00002", 0.2),),
+        },
+    )
+
+    assert report.predicted_worthwhile_reads == pytest.approx(0.5)
+    assert "predicted totals cover only some batches" not in " ".join(report.warnings)

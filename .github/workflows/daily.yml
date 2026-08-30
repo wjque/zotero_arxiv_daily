@@ -97,7 +97,7 @@ jobs:
                   test -f "runtime/state/$required" || { echo "Persisted state is missing $required" >&2; exit 1; }
                   cp "runtime/state/$required" runtime/
                 done
-                for optional in proposal-cache.json ranking-weights.json quality-profile.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json run-manifest.json run-manifest-history.json validation-manifest.json validation-manifest-history.json efficiency-baseline-manifest.json efficiency-report.json; do
+                for optional in proposal-cache.json ranking-weights.json quality-profile.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json run-manifest.json run-manifest-history.json validation-manifest.json validation-manifest-history.json efficiency-baseline-manifest.json efficiency-report.json worthwhile-predictions.json; do
                   if test -f "runtime/state/$optional"; then cp "runtime/state/$optional" runtime/; fi
                 done
                 echo "legacy=true" >> "$GITHUB_OUTPUT"
@@ -210,7 +210,7 @@ jobs:
           git fetch --no-tags origin state
           git worktree add --detach runtime/state origin/state
           test -f runtime/state/state.enc.json
-          for plaintext_state in arxiv-state.json feedback-state.json recommendation-history.json proposal-cache.json ranking-weights.json quality-profile.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json run-manifest.json run-manifest-history.json validation-manifest.json validation-manifest-history.json efficiency-baseline-manifest.json efficiency-report.json; do
+          for plaintext_state in arxiv-state.json feedback-state.json recommendation-history.json proposal-cache.json ranking-weights.json quality-profile.json deployment-receipt.json pending-publishable-recommendations.json pending-recommendation-history.json run-manifest.json run-manifest-history.json validation-manifest.json validation-manifest-history.json efficiency-baseline-manifest.json efficiency-report.json worthwhile-predictions.json; do
             test ! -e "runtime/state/$plaintext_state" || {
               echo "State tip still contains plaintext protected state: $plaintext_state" >&2
               exit 1

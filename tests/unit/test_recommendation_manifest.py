@@ -28,6 +28,7 @@ from zotero_arxiv_daily.profile.quality_policy import (
     LEGACY_QUALITY_PROFILE_POLICY_VERSION,
     get_quality_reference_policy,
 )
+from zotero_arxiv_daily.ranking.outcome import DEFAULT_WORTHWHILE_POLICY
 
 
 def test_manifest_contains_only_counts_and_budget_metadata() -> None:
@@ -375,7 +376,7 @@ def test_refined_run_judges_shortlist_and_generates_final_only_explanations(tmp_
         for index, title in enumerate(titles, start=1)
     )
 
-    result, manifest = run_refined_recommendation(
+    result, manifest, predictions = run_refined_recommendation(
         candidates,
         profile,
         now,
@@ -385,7 +386,7 @@ def test_refined_run_judges_shortlist_and_generates_final_only_explanations(tmp_
         output_language="en",
         completed_at=now,
     )
-    repeated, repeated_manifest = run_refined_recommendation(
+    repeated, repeated_manifest, _ = run_refined_recommendation(
         candidates,
         profile,
         now,
@@ -435,7 +436,7 @@ def test_refined_run_filters_evidence_supported_incremental_solution(tmp_path: P
         replace(_candidate("2401.00002"), title="Learning beta", authors=("Bob",)),
     )
 
-    result, manifest = run_refined_recommendation(
+    result, manifest, _ = run_refined_recommendation(
         candidates,
         RemoteServingProfile(4, 9, ("learning",), ("cs.LG",), (), ()),
         datetime(2026, 8, 1, tzinfo=UTC),
@@ -466,7 +467,7 @@ def test_refined_ranking_adds_reachable_abstract_project_page_evidence(tmp_path:
         summary="Learning methods. Project: https://github.com/example/project",
     )
 
-    result, _ = run_refined_recommendation(
+    result, _, _ = run_refined_recommendation(
         (without_page, with_page),
         profile,
         now,
@@ -521,7 +522,7 @@ def test_refined_manifest_records_measured_usage_and_context_mode(tmp_path: Path
         for index in range(1, 4)
     )
 
-    _, manifest = run_refined_recommendation(
+    _, manifest, _ = run_refined_recommendation(
         candidates,
         profile,
         now,
@@ -558,7 +559,7 @@ def test_refined_run_references_only_aggregate_approved_quality_profile(tmp_path
         (),
     )
 
-    _, manifest = run_refined_recommendation(
+    _, manifest, _ = run_refined_recommendation(
         (_candidate("2401.00001"),),
         interest_profile,
         now,
@@ -611,3 +612,61 @@ def test_legacy_quality_profile_keeps_legacy_judge_contract(tmp_path: Path) -> N
 
     assert provider.calls[0][0] == "judge-v3"
     assert provider.calls[0][1][0]["quality_reference"] == legacy_profile.prompt_payload()
+
+
+def test_refined_run_predicts_the_published_records_without_changing_selection(
+    tmp_path: Path,
+) -> None:
+    """Estimates cover exactly the published batch, in rank order, and selection is untouched."""
+
+    profile = RemoteServingProfile(4, 9, ("learning",), ("cs.LG",), (), ())
+    provider = _RefinementProvider()
+    cache = ProposalCache(tmp_path / "refinement-cache.json")
+    now = datetime(2026, 8, 1, tzinfo=UTC)
+    titles = ("Learning alpha", "Learning beta", "Learning gamma", "Learning delta")
+    candidates = tuple(
+        replace(_candidate(f"2401.{index:05d}"), title=title, authors=(f"Author {index}",))
+        for index, title in enumerate(titles, start=1)
+    )
+
+    result, manifest, predictions = run_refined_recommendation(
+        candidates,
+        profile,
+        now,
+        provider,
+        cache,
+        model="deepseek-v4-flash",
+        output_language="en",
+        completed_at=now,
+    )
+
+    published = tuple(record.candidate.arxiv_id.canonical for record in result.recommendations)
+    assert tuple(estimate.arxiv_id for estimate in predictions) == published
+    assert all(
+        estimate.policy_version == DEFAULT_WORTHWHILE_POLICY.version for estimate in predictions
+    )
+    assert all(estimate.provenance == manifest.weight_set_version for estimate in predictions)
+    assert all(0 < estimate.expected_worthwhile <= 1 for estimate in predictions)
+    # Selection is the v0.2.1 behavior this slice must not disturb.
+    assert published == ("2401.00001", "2401.00002", "2401.00003")
+
+
+def test_refined_run_without_a_shortlist_predicts_nothing(tmp_path: Path) -> None:
+    profile = RemoteServingProfile(4, 9, ("learning",), ("cs.LG",), (), ())
+    provider = _RefinementProvider()
+    cache = ProposalCache(tmp_path / "refinement-cache.json")
+    now = datetime(2026, 8, 1, tzinfo=UTC)
+
+    result, _, predictions = run_refined_recommendation(
+        (),
+        profile,
+        now,
+        provider,
+        cache,
+        model="deepseek-v4-flash",
+        output_language="en",
+        completed_at=now,
+    )
+
+    assert result.recommendations == ()
+    assert predictions == ()

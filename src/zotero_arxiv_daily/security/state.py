@@ -31,6 +31,7 @@ OPTIONAL_STATE_FILES = (
     "quality-profile.json",
     "validation-manifest.json",
     "validation-manifest-history.json",
+    "worthwhile-predictions.json",
 )
 ALLOWED_STATE_FILES = frozenset((*REQUIRED_STATE_FILES, *OPTIONAL_STATE_FILES))
 

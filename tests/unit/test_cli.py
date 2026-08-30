@@ -9,9 +9,15 @@ from pytest import CaptureFixture, MonkeyPatch
 
 from zotero_arxiv_daily import cli
 from zotero_arxiv_daily.arxiv.discovery import DiscoveryQuery
-from zotero_arxiv_daily.arxiv.models import RetrievalCheckpoint, RetrievalResult
+from zotero_arxiv_daily.arxiv.models import (
+    ArxivCandidate,
+    ArxivId,
+    RetrievalCheckpoint,
+    RetrievalResult,
+)
 from zotero_arxiv_daily.arxiv.storage import ArxivStateStore
 from zotero_arxiv_daily.core.config import AppConfig
+from zotero_arxiv_daily.evaluation.predictions import BatchPrediction, WorthwhilePredictionStore
 from zotero_arxiv_daily.evidence.models import PublicPaperEvidence
 from zotero_arxiv_daily.feedback.ledger import (
     FeedbackEvent,
@@ -26,6 +32,8 @@ from zotero_arxiv_daily.profile.quality import (
     QualityProfileStore,
     build_quality_reference_profile,
 )
+from zotero_arxiv_daily.ranking.models import RecommendationRecord
+from zotero_arxiv_daily.ranking.outcome import WorthwhileEstimate
 from zotero_arxiv_daily.site.models import PublishedRecommendationSet, write_published_set
 from zotero_arxiv_daily.zotero.models import SyncBatch, ZoteroCollection, ZoteroItem
 from zotero_arxiv_daily.zotero.storage import ZoteroStore
@@ -582,3 +590,305 @@ def test_weight_activation_is_an_explicit_operator_action_without_a_metric_gate(
         == 0
     )
     assert "ranking weight set activated: coarse-test" in capsys.readouterr().out
+
+
+def _published_candidate(identifier: str) -> ArxivCandidate:
+    now = datetime(2026, 8, 2, tzinfo=UTC)
+    return ArxivCandidate(
+        ArxivId(identifier, 1),
+        "Learning methods",
+        ("Ada",),
+        ("cs.LG",),
+        now,
+        now,
+        f"https://arxiv.org/abs/{identifier}",
+        f"https://arxiv.org/pdf/{identifier}",
+        "Learning methods for useful systems.",
+    )
+
+
+def _published_record(identifier: str) -> RecommendationRecord:
+    return RecommendationRecord(
+        _published_candidate(identifier),
+        0.7,
+        "core",
+        0.6,
+        "A summary of the paper that is long enough to publish.",
+        "A reason this paper is relevant to the reader today.",
+    )
+
+
+def _prediction(identifier: str, expected: float) -> WorthwhileEstimate:
+    return WorthwhileEstimate(
+        identifier, 0.8, 0.5, expected / 0.8, 0.5, expected, True, "declared-prior-v1", "coarse-v2"
+    )
+
+
+def _refined_recommendation_run(
+    monkeypatch: MonkeyPatch, identifiers: tuple[str, ...]
+) -> tuple[object, ...]:
+    """Stand the refined ``recommend run`` path up over fixed records and predictions."""
+
+    profile = RemoteServingProfile(1, 9, (), (), (), ())
+
+    class _CandidateStore:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def candidates(self) -> tuple[object, ...]:
+            return ()
+
+        def retrieval_status(self) -> tuple[bool, str | None, datetime | None]:
+            return False, None, None
+
+    class _History:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def excluded_ids(self, now: object, suppression_days: int) -> frozenset[str]:
+            return frozenset()
+
+        def prepare_success(self, result: object, path: Path, completed_at: object) -> None:
+            return None
+
+    predictions = tuple(
+        _prediction(identifier, 0.30 - 0.05 * index) for index, identifier in enumerate(identifiers)
+    )
+
+    def _run(*args: object, **kwargs: object) -> tuple[object, ...]:
+        result, manifest = package_result(
+            tuple(_published_record(identifier) for identifier in identifiers),
+            profile,
+            datetime(2026, 8, 2, tzinfo=UTC),
+            model="test",
+            candidate_count=len(identifiers),
+            model_requests=0,
+            cache_hits=0,
+            estimated_tokens=0,
+            weight_set_version="coarse-v2",
+        )
+        return result, manifest, predictions
+
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda **_: AppConfig(deepseek_api_key="key", llm_refinement_enabled=True),
+    )
+    monkeypatch.setattr(cli, "read_serving_profile", lambda path: profile)
+    monkeypatch.setattr(cli, "ArxivStateStore", _CandidateStore)
+    monkeypatch.setattr(cli, "RecommendationHistoryStore", _History)
+    monkeypatch.setattr(cli, "run_refined_recommendation", _run)
+    return predictions
+
+
+def test_recorded_predictions_join_recorded_impressions_on_the_same_batch_id(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    identifiers = ("2408.00001", "2408.00002", "2408.00003")
+    _refined_recommendation_run(monkeypatch, identifiers)
+    output = tmp_path / "recommendations.json"
+    prediction_path = tmp_path / "worthwhile-predictions.json"
+    ledger_path = tmp_path / "feedback-state.json"
+
+    assert (
+        cli.main(
+            [
+                "recommend",
+                "run",
+                "--profile",
+                str(tmp_path / "profile.json"),
+                "--candidate-state",
+                str(tmp_path / "arxiv-state.json"),
+                "--output",
+                str(output),
+                "--history",
+                str(tmp_path / "history.json"),
+                "--prepared-history",
+                str(tmp_path / "history.next.json"),
+                "--manifest",
+                str(tmp_path / "run-manifest.json"),
+                "--predictions",
+                str(prediction_path),
+                "--weight-state",
+                str(tmp_path / "weights.json"),
+            ]
+        )
+        == 0
+    )
+    assert (
+        cli.main(
+            [
+                "feedback",
+                "record-impressions",
+                "--input",
+                str(output),
+                "--state",
+                str(ledger_path),
+            ]
+        )
+        == 0
+    )
+
+    stored = WorthwhilePredictionStore(prediction_path).predictions()
+    ledger = FeedbackLedgerStore(ledger_path)
+    impressions = tuple(
+        event for event in ledger.events() if event.event_type is FeedbackEventType.IMPRESSION
+    )
+    batch_ids = {batch.batch_id for batch in ledger.batch_outcomes()}
+
+    assert set(stored) == batch_ids
+    batch_id = next(iter(batch_ids))
+    assert (
+        tuple(item.arxiv_id for item in stored[batch_id])
+        == tuple(
+            event.paper_id
+            for event in sorted(impressions, key=lambda item: item.displayed_rank or 0)
+        )
+        == identifiers
+    )
+
+
+def test_recorded_predictions_survive_a_retried_publication(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    identifiers = ("2408.00001", "2408.00002")
+    _refined_recommendation_run(monkeypatch, identifiers)
+    prediction_path = tmp_path / "worthwhile-predictions.json"
+    arguments = [
+        "recommend",
+        "run",
+        "--profile",
+        str(tmp_path / "profile.json"),
+        "--candidate-state",
+        str(tmp_path / "arxiv-state.json"),
+        "--output",
+        str(tmp_path / "recommendations.json"),
+        "--history",
+        str(tmp_path / "history.json"),
+        "--prepared-history",
+        str(tmp_path / "history.next.json"),
+        "--manifest",
+        str(tmp_path / "run-manifest.json"),
+        "--predictions",
+        str(prediction_path),
+        "--weight-state",
+        str(tmp_path / "weights.json"),
+    ]
+
+    assert cli.main(arguments) == 0
+    assert cli.main(arguments) == 0
+
+    assert len(WorthwhilePredictionStore(prediction_path).batches()) == 1
+
+
+def test_non_refined_recommendation_records_no_prediction(
+    monkeypatch: MonkeyPatch, tmp_path: Path
+) -> None:
+    profile = RemoteServingProfile(1, 9, (), (), (), ())
+
+    class _CandidateStore:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def candidates(self) -> tuple[object, ...]:
+            return ()
+
+        def retrieval_status(self) -> tuple[bool, str | None, datetime | None]:
+            return False, None, None
+
+    class _History:
+        def __init__(self, path: Path) -> None:
+            self.path = path
+
+        def excluded_ids(self, now: object, suppression_days: int) -> frozenset[str]:
+            return frozenset()
+
+        def prepare_success(self, result: object, path: Path, completed_at: object) -> None:
+            return None
+
+    def _run(*args: object, **kwargs: object) -> tuple[object, object]:
+        return package_result(
+            (_published_record("2408.00001"),),
+            profile,
+            datetime(2026, 8, 2, tzinfo=UTC),
+            model="test",
+            candidate_count=1,
+            model_requests=0,
+            cache_hits=0,
+            estimated_tokens=0,
+        )
+
+    monkeypatch.setattr(cli, "load_config", lambda **_: AppConfig(deepseek_api_key="key"))
+    monkeypatch.setattr(cli, "read_serving_profile", lambda path: profile)
+    monkeypatch.setattr(cli, "ArxivStateStore", _CandidateStore)
+    monkeypatch.setattr(cli, "RecommendationHistoryStore", _History)
+    monkeypatch.setattr(cli, "run_recommendation", _run)
+    prediction_path = tmp_path / "worthwhile-predictions.json"
+
+    assert (
+        cli.main(
+            [
+                "recommend",
+                "run",
+                "--profile",
+                str(tmp_path / "profile.json"),
+                "--candidate-state",
+                str(tmp_path / "arxiv-state.json"),
+                "--output",
+                str(tmp_path / "recommendations.json"),
+                "--history",
+                str(tmp_path / "history.json"),
+                "--prepared-history",
+                str(tmp_path / "history.next.json"),
+                "--manifest",
+                str(tmp_path / "run-manifest.json"),
+                "--predictions",
+                str(prediction_path),
+                "--weight-state",
+                str(tmp_path / "weights.json"),
+            ]
+        )
+        == 0
+    )
+
+    assert not prediction_path.exists()
+
+
+def test_evaluate_worthwhile_reads_persisted_predictions(
+    monkeypatch: MonkeyPatch, tmp_path: Path, capsys: CaptureFixture[str]
+) -> None:
+    ledger_path = tmp_path / "feedback-state.json"
+    prediction_path = tmp_path / "worthwhile-predictions.json"
+    report_path = tmp_path / "worthwhile-report.json"
+    ledger = FeedbackLedgerStore(ledger_path)
+    ledger.record_impressions("published-a", ("2408.00001",), datetime(2026, 8, 2, tzinfo=UTC))
+    WorthwhilePredictionStore(prediction_path).record(
+        BatchPrediction(
+            "published-a",
+            datetime(2026, 8, 2, tzinfo=UTC),
+            "declared-prior-v1",
+            "coarse-v2",
+            (_prediction("2408.00001", 0.30),),
+        )
+    )
+
+    assert (
+        cli.main(
+            [
+                "evaluate",
+                "worthwhile",
+                "--state",
+                str(ledger_path),
+                "--output",
+                str(report_path),
+                "--predictions",
+                str(prediction_path),
+            ]
+        )
+        == 0
+    )
+
+    report = json.loads(report_path.read_text(encoding="utf-8"))
+    assert report["predicted_worthwhile_reads"] == pytest.approx(0.30)
+    assert "no batch prediction was supplied" not in " ".join(report["warnings"])
+    assert "worthwhile evaluation written" in capsys.readouterr().out
