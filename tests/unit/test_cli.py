@@ -282,6 +282,38 @@ def test_feedback_report_emits_only_aggregate_explicit_outcomes(
     }
 
 
+def test_evaluate_worthwhile_writes_an_observation_only_objective_report(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], tmp_path: Path
+) -> None:
+    state = tmp_path / "feedback.json"
+    store = FeedbackLedgerStore(state)
+    shown_at = datetime(2026, 8, 1, tzinfo=UTC)
+    store.record_impressions("published-one", ("paper-one", "paper-two"), shown_at)
+    store.ingest(
+        (
+            FeedbackEvent(
+                "worthwhile-one",
+                FeedbackEventType.OUTCOME,
+                "paper-one",
+                datetime(2026, 8, 1, 2, tzinfo=UTC),
+                FeedbackOutcome.WORTHWHILE,
+            ),
+        )
+    )
+    output = tmp_path / "worthwhile-report.json"
+    monkeypatch.setattr(cli, "load_config", lambda **_: AppConfig())
+
+    exit_code = cli.main(["evaluate", "worthwhile", "--state", str(state), "--output", str(output)])
+
+    assert exit_code == 0
+    assert "observation-only" in capsys.readouterr().out
+    report = json.loads(output.read_text(encoding="utf-8"))
+    assert report["worthwhile_read_count"] == 1
+    assert report["not_worthwhile_read_count"] == 0
+    assert report["unlabeled_impression_count"] == 1
+    assert report["eligible_for_activation"] is False
+
+
 def test_state_commands_round_trip_validated_private_workflow_state(
     monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], tmp_path: Path
 ) -> None:

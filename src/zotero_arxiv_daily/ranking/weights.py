@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+from collections.abc import Sequence
 from dataclasses import asdict, dataclass, replace
 from datetime import datetime
 from enum import StrEnum
@@ -47,6 +48,82 @@ class NormalizedFeature:
             raise ValueError("unavailable normalized features must not carry a score")
         if self.observed_at is not None:
             require_aware_utc(self.observed_at, "observed_at")
+
+
+@dataclass(frozen=True, slots=True)
+class GroupAggregate:
+    """One feature group reduced to a value and the evidence confidence supporting it.
+
+    Relevance scoring folds confidence directly into the value, which is correct for a single
+    blended score but hides how much evidence produced it. Objective estimation needs the two
+    separated so a confident weak signal stays distinguishable from an unknown one.
+    """
+
+    value: float
+    confidence: float
+    feature_count: int
+
+    def __post_init__(self) -> None:
+        if not 0 <= self.value <= 1 or not 0 <= self.confidence <= 1:
+            raise ValueError("group aggregate values must be normalized")
+        if self.feature_count < 1:
+            raise ValueError("group aggregate requires at least one applicable feature")
+
+
+_INTEREST_IMPORTANCE = {
+    "long_term_lexical": 0.25,
+    "recent_lexical": 0.15,
+    "category": 0.20,
+    "long_term_facet": 0.10,
+    "recent_facet": 0.10,
+    "prototype": 0.20,
+}
+_LEGACY_INTEREST_IMPORTANCE = {"lexical": 0.55, "category": 0.30, "facet": 0.15}
+
+
+def _importance(group: FeatureGroup, features: Sequence[NormalizedFeature]) -> dict[str, float]:
+    if group is not FeatureGroup.INTEREST:
+        return {}
+    names = {feature.name for feature in features}
+    return _INTEREST_IMPORTANCE if "long_term_lexical" in names else _LEGACY_INTEREST_IMPORTANCE
+
+
+def group_value(group: FeatureGroup, features: Sequence[NormalizedFeature]) -> float:
+    """Reduce one group to its confidence-discounted importance-weighted relevance value."""
+
+    importance = _importance(group, features)
+    weighted = [(feature, importance.get(feature.name, 1.0)) for feature in features]
+    denominator = sum(weight for _, weight in weighted)
+    return (
+        sum(feature.value * feature.confidence * weight for feature, weight in weighted)
+        / denominator
+    )
+
+
+def aggregate_groups(
+    features: Sequence[NormalizedFeature],
+) -> dict[FeatureGroup, GroupAggregate]:
+    """Aggregate applicable features per group, keeping value and confidence separable.
+
+    Unavailable features are excluded rather than scored as zero, so a group with no applicable
+    evidence is simply absent from the result instead of becoming a confident low value.
+    """
+
+    by_group: dict[FeatureGroup, list[NormalizedFeature]] = {}
+    for feature in features:
+        if feature.applicable:
+            by_group.setdefault(feature.group, []).append(feature)
+    aggregates: dict[FeatureGroup, GroupAggregate] = {}
+    for group, values in by_group.items():
+        importance = _importance(group, values)
+        weighted = [(feature, importance.get(feature.name, 1.0)) for feature in values]
+        denominator = sum(weight for _, weight in weighted)
+        aggregates[group] = GroupAggregate(
+            sum(feature.value * weight for feature, weight in weighted) / denominator,
+            sum(feature.confidence * weight for feature, weight in weighted) / denominator,
+            len(values),
+        )
+    return aggregates
 
 
 @dataclass(frozen=True, slots=True)

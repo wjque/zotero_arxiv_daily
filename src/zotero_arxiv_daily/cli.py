@@ -36,6 +36,10 @@ from zotero_arxiv_daily.evaluation.offline import (
     EvaluationSnapshotStore,
     make_evaluation_snapshot,
 )
+from zotero_arxiv_daily.evaluation.worthwhile import (
+    run_worthwhile_evaluation,
+    write_worthwhile_report,
+)
 from zotero_arxiv_daily.evidence.github import UrlLibTransport as GitHubTransport
 from zotero_arxiv_daily.evidence.openalex import OpenAlexClient, OpenAlexEvidenceEnricher
 from zotero_arxiv_daily.evidence.paper_sections import PaperSectionClient
@@ -259,6 +263,16 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_efficiency_parser.add_argument("--candidate", type=Path, required=True)
     evaluate_efficiency_parser.add_argument(
         "--output", type=Path, default=Path("runtime/efficiency-report.json")
+    )
+    evaluate_worthwhile_parser = evaluate_commands.add_parser(
+        "worthwhile",
+        help="Observe the declared worthwhile-reading objective against explicit outcomes",
+    )
+    evaluate_worthwhile_parser.add_argument(
+        "--state", type=Path, default=Path("runtime/feedback-state.json")
+    )
+    evaluate_worthwhile_parser.add_argument(
+        "--output", type=Path, default=Path("runtime/worthwhile-report.json")
     )
     state_parser = subcommands.add_parser(
         "state", help="Encrypt and restore private workflow state"
@@ -634,6 +648,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             comparison = compare_manifest_files(args.baseline, args.candidate, args.output)
             state = "measured" if comparison.comparable else "observation-only"
             print(f"efficiency observation written: {state}")
+            return 0
+        if args.command == "evaluate" and args.evaluate_command == "worthwhile":
+            ledger = FeedbackLedgerStore(args.state)
+            worthwhile_report = run_worthwhile_evaluation(
+                ledger.batch_outcomes(), ledger.position_outcomes()
+            )
+            write_worthwhile_report(worthwhile_report, args.output)
+            print(
+                "worthwhile evaluation written: observation-only, "
+                f"{worthwhile_report.worthwhile_read_count} explicit worthwhile read(s), "
+                f"{len(worthwhile_report.warnings)} warning(s)"
+            )
             return 0
         if args.command == "evaluate" and args.evaluate_command == "snapshot":
             created_at = datetime.now(UTC)
