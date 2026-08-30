@@ -7,6 +7,7 @@ from collections import Counter
 from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from enum import StrEnum
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
 from zotero_arxiv_daily.profile.models import PreferenceFacet, RemoteServingProfile
@@ -20,11 +21,13 @@ from zotero_arxiv_daily.ranking.models import (
     ScientificValueAssessment,
     ScoredCandidate,
 )
+from zotero_arxiv_daily.ranking.outcome import WorthwhileEstimate, unknown_estimate
 from zotero_arxiv_daily.ranking.weights import (
     DEFAULT_WEIGHT_SET,
     FeatureGroup,
     NormalizedFeature,
     WeightSet,
+    group_value,
 )
 
 _WORDS = re.compile(r"[a-z][a-z0-9-]{2,}")
@@ -34,6 +37,13 @@ def _facet_tokens(value: str) -> frozenset[str]:
     """Normalize hyphenated and spaced facet labels to the same token set."""
 
     return frozenset(_WORDS.findall(value.casefold().replace("-", " ")))
+
+
+class SelectionObjective(StrEnum):
+    """What the qualified pool is ordered by; constraints are identical under both."""
+
+    RELEVANCE = "relevance"
+    EXPECTED_WORTHWHILE = "expected_worthwhile"
 
 
 @dataclass(frozen=True, slots=True)
@@ -49,6 +59,7 @@ class SelectionPolicy:
     minimum_solution_advance: float = 0.5
     minimum_technical_depth: float = 0.5
     minimum_value_confidence: float = 0.5
+    objective: SelectionObjective = SelectionObjective.RELEVANCE
 
     def __post_init__(self) -> None:
         thresholds = (
@@ -260,8 +271,15 @@ def select_diverse(
     *,
     policy: SelectionPolicy | None = None,
     scientific_values: Mapping[str, ScientificValueAssessment] | None = None,
+    estimates: Mapping[str, WorthwhileEstimate] | None = None,
 ) -> tuple[ScoredCandidate, ...]:
-    """Select quality-qualified results with quotas and author/topic diversity."""
+    """Select quality-qualified results with quotas and author/topic diversity.
+
+    The declared objective decides only the order in which the qualified pool is walked. Every
+    published constraint - minimum score, judged quality, confident scientific-value rejection,
+    source quotas, author and topic diversity, and the batch target - applies identically under
+    both objectives, so no estimate can enlarge a batch or admit an ineligible paper.
+    """
 
     if policy is None and minimum_score > 1:
         return ()
@@ -284,6 +302,8 @@ def select_diverse(
         and _meets_judged_quality(item, active_policy.minimum_judged_quality)
         and item.candidate.arxiv_id.canonical not in value_rejections
     ]
+    if active_policy.objective is SelectionObjective.EXPECTED_WORTHWHILE:
+        qualified = _by_expected_worthwhile(qualified, estimates or {})
     # Reserve an eligible exploration slot before source-cap filling. Presentation order is applied
     # after selection, so this does not turn the batch into a source-grouped reading experience.
     for source in ("exploration", "core", "adjacent"):
@@ -323,6 +343,23 @@ def order_recommendations(
             ),
         )
     )
+
+
+def _by_expected_worthwhile(
+    qualified: list[ScoredCandidate], estimates: Mapping[str, WorthwhileEstimate]
+) -> list[ScoredCandidate]:
+    """Order an already-qualified pool by expected worthwhile reads, deterministically.
+
+    A candidate without an estimate falls back to the declared no-evidence prior rather than to
+    zero, so an unestimated paper is treated as unknown instead of as a predicted failure.
+    """
+
+    def key(item: ScoredCandidate) -> tuple[float, str]:
+        canonical = item.candidate.arxiv_id.canonical
+        estimate = estimates.get(canonical) or unknown_estimate(canonical)
+        return (-estimate.expected_worthwhile, canonical)
+
+    return sorted(qualified, key=key)
 
 
 def _diverse(item: ScoredCandidate, authors: Counter[str], topic_sets: list[set[str]]) -> bool:
@@ -381,41 +418,14 @@ def _score_features(
     for feature in features:
         if feature.applicable:
             by_group[feature.group].append(feature)
-    group_values = {
-        group: _group_value(group, values) for group, values in by_group.items() if values
-    }
-    available_weight = sum(weight_set.group_weights[group] for group in group_values)
+    values = {group: group_value(group, members) for group, members in by_group.items() if members}
+    available_weight = sum(weight_set.group_weights[group] for group in values)
     contributions = {
         group: (weight_set.group_weights[group] * value / available_weight)
-        for group, value in group_values.items()
+        for group, value in values.items()
         if available_weight > 0
     }
-    return sum(contributions.values()), group_values, contributions
-
-
-def _group_value(group: FeatureGroup, features: list[NormalizedFeature]) -> float:
-    if group is FeatureGroup.INTEREST:
-        names = {feature.name for feature in features}
-        importance = (
-            {
-                "long_term_lexical": 0.25,
-                "recent_lexical": 0.15,
-                "category": 0.20,
-                "long_term_facet": 0.10,
-                "recent_facet": 0.10,
-                "prototype": 0.20,
-            }
-            if "long_term_lexical" in names
-            else {"lexical": 0.55, "category": 0.30, "facet": 0.15}
-        )
-    else:
-        importance = {}
-    weighted = [(feature, importance.get(feature.name, 1.0)) for feature in features]
-    denominator = sum(weight for _, weight in weighted)
-    return (
-        sum(feature.value * feature.confidence * weight for feature, weight in weighted)
-        / denominator
-    )
+    return sum(contributions.values()), values, contributions
 
 
 def _meets_judged_quality(item: ScoredCandidate, minimum: float) -> bool:

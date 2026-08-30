@@ -274,6 +274,32 @@ uv run zotero-arxiv-daily ranking activate-weights \
   --version coarse-v2
 ```
 
+v0.3 adds a second declared selection objective, expected worthwhile reads, defined as reading
+likelihood multiplied by post-reading value. Both factors are estimated separately from the feature
+groups the ranker already computes: interest, recency, and watched identity drive reading
+likelihood; scientific quality and project/implementation evidence drive post-reading value. Each
+factor stays separately inspectable together with the evidence confidence behind it. A factor is
+mapped into a declared interval and then shrunk toward a declared prior, so every estimate is
+bounded, monotone in the evidence, and returns the prior rather than zero when evidence is missing.
+The objective reorders the qualified pool only. Minimum score, judged quality, confident
+scientific-value rejection, source quotas, author and topic diversity, and the batch target are
+unchanged, and ties break on canonical arXiv ID. The declared `declared-prior-v1` policy is
+reviewed, never fitted to collected feedback, and relevance remains the production default, so the
+scheduled path stays on the released v0.2.1 objective. Observe the objective against explicit
+outcomes locally:
+
+```bash
+uv run zotero-arxiv-daily evaluate worthwhile \
+  --state runtime/feedback-state.json \
+  --output runtime/worthwhile-report.json
+```
+
+The ignored `runtime/worthwhile-report.json` contains aggregate counts, coverage, per-batch
+prediction comparison when predictions are supplied, and a proposed but unapproved calibration only.
+It carries no paper identifiers. A delayed outcome is credited to its original impression batch, and
+an unlabeled impression is reported as unknown rather than as not worthwhile. The report activates
+nothing; adopting the objective is a separate explicit operator decision.
+
 `ZAD_LLM_REFINEMENT_ENABLED` is enabled in the production workflow and `.env.example` so quality
 assessment is the default path. The pipeline judges only the coarse shortlist with `judge-v5`,
 applies local selection, and asks `explain-v3` for only the final papers. The judge separately scores

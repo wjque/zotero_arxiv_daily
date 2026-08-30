@@ -16,6 +16,13 @@
 - Added separate owner-only local-interest and keyed remote-serving profile artifacts. Serving
   schema v5 carries bounded long-term/recent HMAC features, anonymous paper prototypes, protected
   exact watchlists, and a key-pair verifier without plaintext free-form interests or names.
+- Added a declared, versioned worthwhile-reading objective that estimates expected worthwhile reads
+  as reading likelihood multiplied by post-reading value, keeps both factors and their evidence
+  confidence separately inspectable, and returns a bounded declared prior instead of zero when
+  evidence is unavailable.
+- Added an offline objective report comparing per-batch predictions with realized explicit outcomes,
+  including sample size, coverage, unlabeled impressions, and a proposed but unapproved calibration,
+  written by a new `evaluate worthwhile` command.
 
 ### Changed
 
@@ -26,6 +33,9 @@
   cross-category runs to use a separate candidate-state file.
 - Score schema-v5 profiles on separate long-term, recent, controlled-facet, anonymous-prototype,
   and exact-watchlist components while keeping the profile and matching key outside model payloads.
+- Made expected-worthwhile an opt-in selection objective that reorders the qualified pool only.
+  Minimum score, judged quality, confident scientific-value rejection, source quotas, author and
+  topic diversity, and the batch target are unchanged, and relevance remains the production default.
 
 ### Compatibility and Security
 
@@ -39,6 +49,9 @@
 - Remote-profile schemas v1-v4 remain readable without a feature key. Schema v5 requires a separate
   `ZAD_PROFILE_FEATURE_KEY`; publication preflights the key pair, and a missing or mismatched pair
   fails closed before model use while preserving the previous deployed site.
+- The worthwhile objective is declared and reviewed, never fitted to collected feedback. Its offline
+  report is aggregate-only owner-only local output outside the encrypted state allowlist, is never
+  published or migrated, and activates nothing; the scheduled path stays on the v0.2.1 objective.
 
 ## v0.2.1 - 2026-08-18
 
