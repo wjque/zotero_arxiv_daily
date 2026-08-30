@@ -69,6 +69,11 @@ from zotero_arxiv_daily.ranking.models import (
     ScientificValueAssessment,
     ScoredCandidate,
 )
+from zotero_arxiv_daily.ranking.outcome import (
+    WorthwhileEstimate,
+    estimate_worthwhile,
+    unknown_estimate,
+)
 from zotero_arxiv_daily.ranking.select import (
     order_recommendations,
     pre_rank,
@@ -471,8 +476,13 @@ def run_refined_recommendation(
     max_request_bytes: int = DEFAULT_REQUEST_BYTE_LIMIT,
     max_requests: int = 8,
     retries: int = 1,
-) -> tuple[RecommendationSet, RecommendationRunManifest]:
-    """Run versioned judging then final-only explanation without model-controlled selection."""
+) -> tuple[RecommendationSet, RecommendationRunManifest, tuple[WorthwhileEstimate, ...]]:
+    """Run versioned judging then final-only explanation without model-controlled selection.
+
+    The returned estimates are the declared worthwhile objective for exactly the published records,
+    in displayed-rank order. They are computed after selection and never fed back into it, so this
+    function's ranking behavior is identical with and without them.
+    """
 
     if not 1 <= pre_rank_limit <= 80:
         raise ValueError("pre_rank_limit must be between 1 and 80")
@@ -514,7 +524,7 @@ def run_refined_recommendation(
     )[:pre_rank_limit]
     shortlisted = tuple(item.candidate for item in coarse)
     if not shortlisted:
-        return package_result(
+        empty, empty_manifest = package_result(
             (),
             profile,
             now,
@@ -527,6 +537,7 @@ def run_refined_recommendation(
             completed_at=completed_at or datetime.now(UTC),
             weight_set_version=weight_set.version,
         )
+        return empty, empty_manifest, ()
     paper_sections = inspect_paper_sections(shortlisted, paper_section_client, cache, now)
     shortlisted_ids = {candidate.arxiv_id.canonical for candidate in shortlisted}
     repository_materials = {
@@ -613,7 +624,7 @@ def run_refined_recommendation(
             and judge_usage.actual_output_tokens is not None
             else None
         )
-        return package_result(
+        unselected, unselected_manifest = package_result(
             (),
             profile,
             now,
@@ -641,6 +652,7 @@ def run_refined_recommendation(
             quality_profile=quality_profile,
             scientific_value_filtered_count=value_filtered_count,
         )
+        return unselected, unselected_manifest, ()
     explanation_records = tuple(
         _explanation_record(
             item,
@@ -696,6 +708,15 @@ def run_refined_recommendation(
         paper_sections,
         repository_materials,
     )
+    # Estimated after selection and never read back into it, so ranking is unchanged. Ordered to
+    # match the published records, which is the order impressions are given displayed ranks in, and
+    # kept 1:1 with them - a record the estimator did not reach takes the declared no-evidence
+    # estimate rather than dropping out and silently shortening the batch's prediction.
+    estimates = estimate_worthwhile(selected, scientific_values, weight_set=weight_set)
+    predictions = tuple(
+        estimates.get(canonical) or unknown_estimate(canonical, provenance=weight_set.version)
+        for canonical in (record.candidate.arxiv_id.canonical for record in records)
+    )
     input_tokens = judge_usage.estimated_input_tokens + explain_usage.estimated_input_tokens
     output_tokens = judge_usage.estimated_output_tokens + explain_usage.estimated_output_tokens
     tokens = input_tokens + output_tokens
@@ -721,7 +742,7 @@ def run_refined_recommendation(
         if judge_usage.latency_seconds is not None and explain_usage.latency_seconds is not None
         else None
     )
-    return package_result(
+    result, manifest = package_result(
         records,
         profile,
         now,
@@ -751,6 +772,7 @@ def run_refined_recommendation(
         quality_profile=quality_profile,
         scientific_value_filtered_count=value_filtered_count,
     )
+    return result, manifest, predictions
 
 
 def _load_cached_proposals(

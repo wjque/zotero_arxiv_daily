@@ -161,6 +161,18 @@ class PublishedRecommendationSet:
         }
 
 
+def published_batch_id(value: PublishedRecommendationSet) -> str:
+    """Return the canonical impression batch identity for one published set.
+
+    Impressions, worthwhile predictions, and the deployment receipt must agree on this string
+    exactly, or the offline objective comparison silently finds no prediction for a batch instead
+    of failing. The workflow and the browser build their own copies of this format because neither
+    can import Python; this is the single Python definition they mirror.
+    """
+
+    return f"published-{value.generation_started_at}"
+
+
 def write_published_set(value: PublishedRecommendationSet, path: Path) -> None:
     """Write a validated publishable input without exposing internal ranking fields."""
 

@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from zotero_arxiv_daily.security.state import ALLOWED_STATE_FILES, OPTIONAL_STATE_FILES
+from zotero_arxiv_daily.site.models import PublishedRecommendationSet, published_batch_id
+
 
 def test_daily_workflow_guards_model_cost_and_promotes_history_after_deployment() -> None:
     workflow = Path(".github/workflows/daily.yml").read_text(encoding="utf-8")
@@ -171,3 +174,28 @@ def test_daily_workflow_reports_scientific_value_filter_count() -> None:
     workflow = Path(".github/workflows/daily.yml").read_text(encoding="utf-8")
 
     assert '"scientific_value_filtered_count"' in workflow
+
+
+def test_daily_workflow_guards_every_allowlisted_state_file_as_plaintext() -> None:
+    """A state file the bundle may carry must also be refused in plaintext on the state branch."""
+
+    workflow = Path(".github/workflows/daily.yml").read_text(encoding="utf-8")
+    guard = next(line for line in workflow.splitlines() if "for plaintext_state in" in line)
+    restore = next(line for line in workflow.splitlines() if "for optional in" in line)
+
+    for name in ALLOWED_STATE_FILES:
+        assert name in guard, name
+    for name in OPTIONAL_STATE_FILES:
+        assert name in restore, name
+
+
+def test_daily_workflow_batch_id_mirrors_the_python_definition() -> None:
+    """The receipt and the browser build their own copy of the impression batch ID format."""
+
+    workflow = Path(".github/workflows/daily.yml").read_text(encoding="utf-8")
+    site = Path("src/zotero_arxiv_daily/site/build.py").read_text(encoding="utf-8")
+    published = PublishedRecommendationSet(5, "2026-08-02T00:00:00+00:00", ())
+
+    assert published_batch_id(published) == "published-2026-08-02T00:00:00+00:00"
+    assert '"batch_id": f"published-{started}"' in workflow
+    assert "`published-${state.data.generation_started_at||state.data.generated_at}`" in site

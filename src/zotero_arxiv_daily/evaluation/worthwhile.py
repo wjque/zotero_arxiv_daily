@@ -235,6 +235,11 @@ def _warnings(
     warnings: list[str] = []
     if predicted is None:
         warnings.append("no batch prediction was supplied; realized outcomes are reported alone")
+    elif any(item.predicted_worthwhile_reads is None for item in comparisons):
+        # The predicted total sums only the batches that carry a prediction, while every realized
+        # count covers all of them. Saying so keeps a history that predates prediction persistence
+        # from being read as an unflattering comparison.
+        warnings.append("predicted totals cover only some batches; totals are not comparable")
     if labeled < _MINIMUM_TOTAL_OUTCOMES:
         warnings.append("labeled post-reading outcomes are insufficient to propose a calibration")
     if coverage is None or coverage < _MINIMUM_COVERAGE:

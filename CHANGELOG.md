@@ -27,6 +27,10 @@
   than category difference. A slot requires existing post-reading-value evidence, a promising
   optimistic bound, and a still-wide interval, costs at most a declared risk budget of expected
   worthwhile reads, and records what it spent and why every other candidate was refused.
+- Added durable per-batch worthwhile predictions, recorded at publication time under the same batch
+  identity impressions use, so the offline objective report compares what the declared policy
+  predicted against what the reader explicitly reported instead of reporting realized outcomes
+  alone. Predictions stay local, are read only offline, and never reach ranking or the site.
 
 ### Changed
 
@@ -62,6 +66,11 @@
 - Exploration constants are declared and reviewed, spend a bounded budget of at most one paper and a
   declared amount of expected worthwhile reads per batch, and decline rather than force a candidate.
   The pipeline and all three workflows are untouched, so scheduled runs never explore.
+- Persisted worthwhile predictions are a new optional file inside the encrypted state bundle,
+  carrying only canonical arXiv IDs and normalized scores. They are written by the refined path,
+  read only by the offline report, and never published, never sent to a model, and never read back
+  into ranking. The feedback-ledger schema is unchanged, bundles written before this release restore
+  unchanged, and deleting the file restores the previous report behavior exactly.
 
 ## v0.2.1 - 2026-08-18
 

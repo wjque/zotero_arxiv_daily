@@ -36,6 +36,7 @@ from zotero_arxiv_daily.evaluation.offline import (
     EvaluationSnapshotStore,
     make_evaluation_snapshot,
 )
+from zotero_arxiv_daily.evaluation.predictions import BatchPrediction, WorthwhilePredictionStore
 from zotero_arxiv_daily.evaluation.worthwhile import (
     run_worthwhile_evaluation,
     write_worthwhile_report,
@@ -82,12 +83,14 @@ from zotero_arxiv_daily.profile.service import (
     publish_github_profile_secrets,
     read_serving_profile,
 )
+from zotero_arxiv_daily.ranking.outcome import DEFAULT_WORTHWHILE_POLICY, WorthwhileEstimate
 from zotero_arxiv_daily.ranking.weights import DEFAULT_WEIGHT_SET, WeightSet, WeightSetRegistry
 from zotero_arxiv_daily.security.state import decrypt_state_bundle, encrypt_state_directory
 from zotero_arxiv_daily.site.build import build_site
 from zotero_arxiv_daily.site.models import (
     WorkflowRun,
     make_published_set,
+    published_batch_id,
     read_published_set,
     write_published_set,
 )
@@ -274,6 +277,9 @@ def build_parser() -> argparse.ArgumentParser:
     evaluate_worthwhile_parser.add_argument(
         "--output", type=Path, default=Path("runtime/worthwhile-report.json")
     )
+    evaluate_worthwhile_parser.add_argument(
+        "--predictions", type=Path, default=Path("runtime/worthwhile-predictions.json")
+    )
     state_parser = subcommands.add_parser(
         "state", help="Encrypt and restore private workflow state"
     )
@@ -430,6 +436,9 @@ def build_parser() -> argparse.ArgumentParser:
     recommend_run_parser.add_argument(
         "--manifest", type=Path, default=Path("runtime/run-manifest.json")
     )
+    recommend_run_parser.add_argument(
+        "--predictions", type=Path, default=Path("runtime/worthwhile-predictions.json")
+    )
     recommend_run_parser.add_argument("--workflow-run-id", type=int)
     recommend_run_parser.add_argument("--workflow-run-attempt", type=int)
     recommend_run_parser.add_argument("--source-revision")
@@ -544,7 +553,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             published = read_published_set(args.input)
             completed = published.generation_completed_at or published.generation_started_at
             occurred_at = datetime.fromisoformat(completed)
-            batch_id = f"published-{published.generation_started_at}"
+            batch_id = published_batch_id(published)
             added, duplicates = FeedbackLedgerStore(args.state).record_impressions(
                 batch_id,
                 tuple(record.arxiv_id for record in published.recommendations),
@@ -652,7 +661,9 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "evaluate" and args.evaluate_command == "worthwhile":
             ledger = FeedbackLedgerStore(args.state)
             worthwhile_report = run_worthwhile_evaluation(
-                ledger.batch_outcomes(), ledger.position_outcomes()
+                ledger.batch_outcomes(),
+                ledger.position_outcomes(),
+                predictions=WorthwhilePredictionStore(args.predictions).predictions(),
             )
             write_worthwhile_report(worthwhile_report, args.output)
             print(
@@ -876,6 +887,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             )
             excluded_ids = history.excluded_ids(started_at, config.recommendation_suppression_days)
             if baseline_mode:
+                predictions: tuple[WorthwhileEstimate, ...] = ()
                 recommendation_set, manifest = run_baseline_recommendation(
                     candidates,
                     profile,
@@ -897,7 +909,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     retries=config.llm_retries,
                 )
             elif config.llm_refinement_enabled:
-                recommendation_set, manifest = run_refined_recommendation(
+                recommendation_set, manifest, predictions = run_refined_recommendation(
                     candidates,
                     profile,
                     started_at,
@@ -925,6 +937,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     retries=config.llm_retries,
                 )
             else:
+                predictions = ()
                 recommendation_set, manifest = run_recommendation(
                     candidates,
                     profile,
@@ -954,15 +967,27 @@ def main(argv: Sequence[str] | None = None) -> int:
                 candidate_pool_source_checkpoint=source_checkpoint,
             )
             workflow_run = _workflow_run(args, config.github_repository)
-            write_published_set(
-                make_published_set(
-                    recommendation_set,
-                    profile_schema_version=profile.schema_version,
-                    workflow_run=workflow_run,
-                    output_language=config.output_language,
-                ),
-                args.output,
+            published = make_published_set(
+                recommendation_set,
+                profile_schema_version=profile.schema_version,
+                workflow_run=workflow_run,
+                output_language=config.output_language,
             )
+            write_published_set(published, args.output)
+            if predictions:
+                # Keyed off the same published set that is written above, so this cannot drift from
+                # the batch ID `feedback record-impressions` derives after a successful deployment.
+                # Timestamped by the batch's own generation instant rather than the wall clock, so
+                # republishing an identical batch is idempotent instead of a stored conflict.
+                WorthwhilePredictionStore(args.predictions).record(
+                    BatchPrediction(
+                        published_batch_id(published),
+                        recommendation_set.generation_started_at,
+                        DEFAULT_WORTHWHILE_POLICY.version,
+                        manifest.weight_set_version,
+                        predictions,
+                    )
+                )
             history.prepare_success(
                 recommendation_set,
                 args.prepared_history,

@@ -70,3 +70,35 @@ def test_state_bundle_rejects_wrong_key_without_writing_output(tmp_path: Path) -
     with pytest.raises(SecurityError, match="cannot be decrypted"):
         decrypt_state_bundle(output, restored, "different-passphrase-1234")
     assert not restored.exists()
+
+
+def test_state_bundle_carries_worthwhile_predictions(tmp_path: Path) -> None:
+    source = tmp_path / "runtime"
+    output = tmp_path / STATE_BUNDLE_FILENAME
+    restored = tmp_path / "restored"
+    _write_required(source)
+    (source / "worthwhile-predictions.json").write_text(
+        '{"schema_version":1,"batches":[]}', encoding="utf-8"
+    )
+
+    encrypt_state_directory(source, output, "state-passphrase-1234")
+    written = decrypt_state_bundle(output, restored, "state-passphrase-1234")
+
+    assert "worthwhile-predictions.json" in written
+    assert json.loads((restored / "worthwhile-predictions.json").read_text(encoding="utf-8")) == {
+        "schema_version": 1,
+        "batches": [],
+    }
+
+
+def test_state_bundle_without_worthwhile_predictions_still_restores(tmp_path: Path) -> None:
+    source = tmp_path / "runtime"
+    output = tmp_path / STATE_BUNDLE_FILENAME
+    restored = tmp_path / "restored"
+    _write_required(source)
+
+    encrypt_state_directory(source, output, "state-passphrase-1234")
+    written = decrypt_state_bundle(output, restored, "state-passphrase-1234")
+
+    assert "worthwhile-predictions.json" not in written
+    assert not (restored / "worthwhile-predictions.json").exists()
