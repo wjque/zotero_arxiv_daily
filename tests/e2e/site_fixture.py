@@ -55,6 +55,7 @@ def build_fixtures(output: Path) -> None:
         output / "current",
         public_output=False,
         passphrase=PASSPHRASE,
+        feedback_repository="owner/repository",
     )
     build_site(published, output / "unsupported", public_output=True, passphrase=None)
     data_path = output / "unsupported" / "data" / "recommendations.json"

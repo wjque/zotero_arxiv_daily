@@ -78,6 +78,22 @@ class PositionOutcomeRate:
     positive_outcome_count: int
 
 
+@dataclass(frozen=True, slots=True)
+class BatchOutcomeMetrics:
+    """Privacy-safe explicit outcome totals for one successfully published batch."""
+
+    batch_id: str
+    impression_count: int
+    explicit_feedback_count: int
+    reading_completion_count: int
+    post_reading_outcome_count: int
+    worthwhile_read_count: int
+    not_worthwhile_read_count: int
+    post_reading_outcome_coverage: float | None
+    worthwhile_given_explicit_outcome: float | None
+    explicit_feedback_coverage: float
+
+
 class FeedbackLedgerStore:
     """Own versioned local feedback state without inferring outcomes from silence."""
 
@@ -86,6 +102,15 @@ class FeedbackLedgerStore:
 
     def events(self) -> tuple[FeedbackEvent, ...]:
         return _state_events(self._read())
+
+    def processed_issue_numbers(self) -> frozenset[int]:
+        """Return validated Issue identities without exposing protected feedback content."""
+
+        state = self._state()
+        processed = state["processed"]
+        if not isinstance(processed, list) or not all(isinstance(item, int) for item in processed):
+            raise ExternalServiceError("feedback processed Issue IDs are invalid")
+        return frozenset(processed)
 
     def ingest(self, events: tuple[FeedbackEvent, ...]) -> tuple[int, int]:
         """Append validated events atomically; same event ID is idempotent only when identical."""
@@ -143,33 +168,14 @@ class FeedbackLedgerStore:
 
         impressions: dict[str, list[FeedbackEvent]] = {}
         outcomes: dict[int, list[FeedbackEvent]] = {}
-        for event in self.events():
+        events = self.events()
+        for event in events:
             if event.event_type is FeedbackEventType.IMPRESSION:
                 impressions.setdefault(event.paper_id, []).append(event)
-        superseded = {
-            event.supersedes_event_id
-            for event in self.events()
-            if event.supersedes_event_id is not None
-        }
-        for event in self.events():
-            if event.outcome is None or event.event_id in superseded:
-                continue
-            candidates = [
-                impression
-                for impression in impressions.get(event.paper_id, [])
-                if impression.occurred_at <= event.occurred_at
-                and (event.batch_id is None or impression.batch_id == event.batch_id)
-            ]
-            if not candidates and event.batch_id is not None:
-                candidates = [
-                    impression
-                    for impression in impressions.get(event.paper_id, [])
-                    if impression.occurred_at <= event.occurred_at
-                ]
-            if candidates:
-                impression = max(candidates, key=lambda item: (item.occurred_at, item.event_id))
-                if impression.displayed_rank is not None:
-                    outcomes.setdefault(impression.displayed_rank, []).append(event)
+        for event in _active_outcomes(events):
+            impression = _matching_impression(event, impressions.get(event.paper_id, []))
+            if impression is not None and impression.displayed_rank is not None:
+                outcomes.setdefault(impression.displayed_rank, []).append(event)
         counts: dict[int, int] = {}
         for values in impressions.values():
             for impression in values:
@@ -187,6 +193,62 @@ class FeedbackLedgerStore:
             )
             for rank, count in sorted(counts.items())
         )
+
+    def batch_outcomes(self) -> tuple[BatchOutcomeMetrics, ...]:
+        """Report the primary worthwhile-read objective without inferring missing outcomes."""
+
+        events = self.events()
+        impressions_by_paper: dict[str, list[FeedbackEvent]] = {}
+        impressions_by_batch: dict[str, list[FeedbackEvent]] = {}
+        for event in events:
+            if event.event_type is not FeedbackEventType.IMPRESSION or event.batch_id is None:
+                continue
+            impressions_by_paper.setdefault(event.paper_id, []).append(event)
+            impressions_by_batch.setdefault(event.batch_id, []).append(event)
+        attributed: dict[str, dict[str, list[FeedbackOutcome]]] = {}
+        for event in _active_outcomes(events):
+            impression = _matching_impression(event, impressions_by_paper.get(event.paper_id, []))
+            if impression is None or impression.batch_id is None or event.outcome is None:
+                continue
+            attributed.setdefault(impression.batch_id, {}).setdefault(event.paper_id, []).append(
+                event.outcome
+            )
+        metrics: list[BatchOutcomeMetrics] = []
+        for batch_id, impressions in sorted(impressions_by_batch.items()):
+            outcomes = attributed.get(batch_id, {})
+            read_papers = {
+                paper_id
+                for paper_id, values in outcomes.items()
+                if FeedbackOutcome.READ in values or bool(set(values) & _POST_READING_OUTCOMES)
+            }
+            worthwhile = {
+                paper_id
+                for paper_id, values in outcomes.items()
+                if FeedbackOutcome.WORTHWHILE in values
+            }
+            not_worthwhile = {
+                paper_id
+                for paper_id, values in outcomes.items()
+                if FeedbackOutcome.NOT_WORTHWHILE in values
+            }
+            explicit_post = worthwhile | not_worthwhile
+            impression_count = len(impressions)
+            read_count = len(read_papers)
+            metrics.append(
+                BatchOutcomeMetrics(
+                    batch_id,
+                    impression_count,
+                    len(outcomes),
+                    read_count,
+                    len(explicit_post),
+                    len(worthwhile),
+                    len(not_worthwhile),
+                    len(explicit_post) / read_count if read_count else None,
+                    len(worthwhile) / len(explicit_post) if explicit_post else None,
+                    len(outcomes) / impression_count if impression_count else 0.0,
+                )
+            )
+        return tuple(metrics)
 
     def record_impressions(
         self, batch_id: str, paper_ids: tuple[str, ...], occurred_at: datetime
@@ -275,6 +337,32 @@ def _state_events(value: dict[str, Any]) -> tuple[FeedbackEvent, ...]:
         return tuple(_event_from_value(item) for item in raw)
     except (KeyError, TypeError, ValueError) as error:
         raise ExternalServiceError("feedback ledger event is invalid") from error
+
+
+_POST_READING_OUTCOMES = frozenset({FeedbackOutcome.WORTHWHILE, FeedbackOutcome.NOT_WORTHWHILE})
+
+
+def _active_outcomes(events: tuple[FeedbackEvent, ...]) -> tuple[FeedbackEvent, ...]:
+    superseded = {
+        event.supersedes_event_id for event in events if event.supersedes_event_id is not None
+    }
+    return tuple(
+        event for event in events if event.outcome is not None and event.event_id not in superseded
+    )
+
+
+def _matching_impression(
+    event: FeedbackEvent, impressions: list[FeedbackEvent]
+) -> FeedbackEvent | None:
+    candidates = [
+        impression
+        for impression in impressions
+        if impression.occurred_at <= event.occurred_at
+        and (event.batch_id is None or impression.batch_id == event.batch_id)
+    ]
+    return (
+        max(candidates, key=lambda item: (item.occurred_at, item.event_id)) if candidates else None
+    )
 
 
 def _event_from_value(value: object) -> FeedbackEvent:
