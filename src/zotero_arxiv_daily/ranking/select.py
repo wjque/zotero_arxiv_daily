@@ -4,13 +4,14 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
 from zotero_arxiv_daily.profile.models import PreferenceFacet, RemoteServingProfile
+from zotero_arxiv_daily.ranking.exploration import ExplorationDecision
 from zotero_arxiv_daily.ranking.interest import (
     protected_interest_match,
     serving_profile_key,
@@ -272,6 +273,7 @@ def select_diverse(
     policy: SelectionPolicy | None = None,
     scientific_values: Mapping[str, ScientificValueAssessment] | None = None,
     estimates: Mapping[str, WorthwhileEstimate] | None = None,
+    exploration: ExplorationDecision | None = None,
 ) -> tuple[ScoredCandidate, ...]:
     """Select quality-qualified results with quotas and author/topic diversity.
 
@@ -279,37 +281,39 @@ def select_diverse(
     published constraint - minimum score, judged quality, confident scientific-value rejection,
     source quotas, author and topic diversity, and the batch target - applies identically under
     both objectives, so no estimate can enlarge a batch or admit an ineligible paper.
+
+    A supplied exploration decision reserves the slots it has already paid for. Its picks come
+    from this same qualified pool, so exploration can only reorder a batch, never enlarge it or
+    admit a rejected paper, and an empty decision simply leaves the slots to ordinary selection.
     """
 
     if policy is None and minimum_score > 1:
         return ()
     active_policy = policy or SelectionPolicy(minimum_score=minimum_score, target=target)
-    value_rejections = scientific_value_rejections(
-        scored, scientific_values or {}, policy=active_policy
-    )
     quotas = {
         "core": active_policy.core_cap,
         "adjacent": active_policy.adjacent_cap,
-        "exploration": active_policy.exploration_cap,
+        # A bounded exploration policy owns the whole exploration allowance, so a batch cannot
+        # hold more off-category papers than the declared budget under either reading of the word.
+        "exploration": (
+            active_policy.exploration_cap if exploration is None else exploration.budget
+        ),
     }
     selected: list[ScoredCandidate] = []
     authors: Counter[str] = Counter()
     topic_sets: list[set[str]] = []
-    qualified = [
-        item
-        for item in scored
-        if item.score >= active_policy.minimum_score
-        and _meets_judged_quality(item, active_policy.minimum_judged_quality)
-        and item.candidate.arxiv_id.canonical not in value_rejections
-    ]
+    qualified = list(qualified_candidates(scored, scientific_values, policy=active_policy))
     if active_policy.objective is SelectionObjective.EXPECTED_WORTHWHILE:
         qualified = _by_expected_worthwhile(qualified, estimates or {})
+    if exploration is not None:
+        _reserve(exploration, qualified, selected, authors, topic_sets, active_policy.target)
     # Reserve an eligible exploration slot before source-cap filling. Presentation order is applied
     # after selection, so this does not turn the batch into a source-grouped reading experience.
     for source in ("exploration", "core", "adjacent"):
         for item in qualified:
             if (
                 item.source == source
+                and item not in selected
                 and len([value for value in selected if value.source == source]) < quotas[source]
                 and _diverse(item, authors, topic_sets)
                 and len(selected) < active_policy.target
@@ -321,6 +325,31 @@ def select_diverse(
         if item not in selected and _diverse(item, authors, topic_sets):
             _append(item, selected, authors, topic_sets)
     return tuple(selected[: active_policy.target])
+
+
+def qualified_candidates(
+    scored: Sequence[ScoredCandidate],
+    scientific_values: Mapping[str, ScientificValueAssessment] | None = None,
+    *,
+    policy: SelectionPolicy | None = None,
+) -> tuple[ScoredCandidate, ...]:
+    """Return the candidates a batch is allowed to contain, before quotas and diversity.
+
+    Exploration and ordinary selection share this single eligibility definition, so a reserved
+    exploration slot can never admit a paper ordinary selection would have rejected.
+    """
+
+    active_policy = policy or SelectionPolicy()
+    rejections = scientific_value_rejections(
+        tuple(scored), scientific_values or {}, policy=active_policy
+    )
+    return tuple(
+        item
+        for item in scored
+        if item.score >= active_policy.minimum_score
+        and _meets_judged_quality(item, active_policy.minimum_judged_quality)
+        and item.candidate.arxiv_id.canonical not in rejections
+    )
 
 
 def order_recommendations(
@@ -360,6 +389,27 @@ def _by_expected_worthwhile(
         return (-estimate.expected_worthwhile, canonical)
 
     return sorted(qualified, key=key)
+
+
+def _reserve(
+    decision: ExplorationDecision,
+    qualified: Sequence[ScoredCandidate],
+    selected: list[ScoredCandidate],
+    authors: Counter[str],
+    topic_sets: list[set[str]],
+    target: int,
+) -> None:
+    """Admit the already-budgeted exploration picks before quota filling.
+
+    A pick missing from the qualified pool is dropped rather than forced, so a decision taken
+    against a stale pool degrades to ordinary selection instead of admitting an ineligible paper.
+    """
+
+    by_id = {item.candidate.arxiv_id.canonical: item for item in qualified}
+    for canonical in decision.selected:
+        item = by_id.get(canonical)
+        if item is not None and item not in selected and len(selected) < target:
+            _append(item, selected, authors, topic_sets)
 
 
 def _diverse(item: ScoredCandidate, authors: Counter[str], topic_sets: list[set[str]]) -> bool:

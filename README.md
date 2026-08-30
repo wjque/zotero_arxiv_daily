@@ -300,6 +300,23 @@ It carries no paper identifiers. A delayed outcome is credited to its original i
 an unlabeled impression is reported as unknown rather than as not worthwhile. The report activates
 nothing; adopting the objective is a separate explicit operator decision.
 
+Alongside that objective, v0.3 redefines exploration as uncertainty rather than category
+difference. An off-category paper the ranker already scores confidently teaches nothing, and a paper
+nothing at all is known about is noise instead of a calculated risk, so neither earns a slot. A
+candidate qualifies only when post-reading-value evidence already exists, the optimistic end of its
+estimate is genuinely promising, and its interval is still wide. Widening comes from the same
+reviewed calibration the objective uses, so an exploration bound can never leave the declared
+interval. Each slot displaces a better-ranked paper, and that price is charged against a declared
+risk budget measured in expected worthwhile reads. The `bounded-uncertainty-v1` policy admits at
+most one paper per batch, prices a slot conservatively, and declines when nothing safe is available
+rather than filling the slot for its own sake. Exploration draws from the same qualified pool
+ordinary selection uses, so it can never admit a paper that minimum score, judged quality, a
+confident scientific-value rejection, or the publication-history suppression window excluded, and it
+cannot enlarge a batch. Every decision records what it spent, which bounds justified each admitted
+paper, and why the rest were refused. A fixed policy seed reproduces a batch exactly, while a
+different seed can rotate among equally promising candidates. Like the objective, exploration is
+declared and reviewed rather than fitted to feedback, and the scheduled path never explores.
+
 `ZAD_LLM_REFINEMENT_ENABLED` is enabled in the production workflow and `.env.example` so quality
 assessment is the default path. The pipeline judges only the coarse shortlist with `judge-v5`,
 applies local selection, and asks `explain-v3` for only the final papers. The judge separately scores
