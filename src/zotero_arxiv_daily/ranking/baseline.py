@@ -8,7 +8,9 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate
-from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity, normalize_identity
+from zotero_arxiv_daily.profile.models import RemoteServingProfile
+from zotero_arxiv_daily.profile.protection import protected_feature_digest
+from zotero_arxiv_daily.ranking.interest import serving_profile_key, watched_identity_match
 from zotero_arxiv_daily.ranking.models import RecommendationRecord, ScoredCandidate
 
 BASELINE_VERSION = "v0.1.2"
@@ -24,23 +26,37 @@ _SOURCE_QUOTAS = (("core", 14), ("adjacent", 4), ("exploration", 2))
 
 def score_baseline(
     candidates: tuple[ArxivCandidate, ...],
-    profile: RemoteProfile,
+    profile: RemoteServingProfile,
     now: datetime,
     feedback_adjustments: Mapping[str, float] | None = None,
     *,
     author_bonus: float = 0.75,
     institution_bonus: float = 0.5,
     identity_bonus_cap: float = 1.0,
+    profile_feature_key: str | None = None,
 ) -> tuple[ScoredCandidate, ...]:
     """Apply the immutable v0.1.2 unnormalized coarse-scoring formula."""
 
     terms = frozenset(profile.topics)
     core = frozenset(profile.core_categories)
     adjacent = frozenset(profile.adjacent_categories)
+    matching_key = serving_profile_key(profile, profile_feature_key)
     scored: list[ScoredCandidate] = []
     for candidate in candidates:
         words = set(_WORDS.findall((candidate.title + " " + candidate.summary).casefold()))
-        lexical = float(len(words & terms))
+        lexical = (
+            float(
+                len(
+                    {
+                        protected_feature_digest(word, matching_key, namespace="baseline-lexical")
+                        for word in words
+                    }
+                    & set(profile.baseline_lexical_digests)
+                )
+            )
+            if matching_key is not None
+            else float(len(words & terms))
+        )
         category = (
             2.0
             if set(candidate.categories) & core
@@ -52,8 +68,20 @@ def score_baseline(
         recency = max(0.0, 1.0 - age / 14)
         source = "core" if category == 2.0 else "adjacent" if category == 1.0 else "exploration"
         feedback = (feedback_adjustments or {}).get(candidate.arxiv_id.canonical, 0.0)
-        author_match = _matches_any(candidate.authors, profile.watched_authors)
-        institution_match = _matches_any(candidate.affiliations, profile.watched_institutions)
+        author_match = watched_identity_match(
+            candidate.authors,
+            profile.watched_authors,
+            profile.watched_author_digests,
+            matching_key,
+            namespace="author",
+        )
+        institution_match = watched_identity_match(
+            candidate.affiliations,
+            profile.watched_institutions,
+            profile.watched_institution_digests,
+            matching_key,
+            namespace="institution",
+        )
         watched_author = min(author_bonus if author_match else 0.0, identity_bonus_cap)
         watched_institution = min(
             institution_bonus if institution_match else 0.0,
@@ -114,11 +142,6 @@ def order_baseline(
             ),
         )
     )
-
-
-def _matches_any(values: tuple[str, ...], identities: tuple[WatchedIdentity, ...]) -> bool:
-    normalized_values = {normalize_identity(value) for value in values if value.strip()}
-    return any(bool(normalized_values & identity.normalized_names) for identity in identities)
 
 
 def _diverse(item: ScoredCandidate, authors: Counter[str], topic_sets: list[set[str]]) -> bool:

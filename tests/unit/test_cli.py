@@ -20,14 +20,15 @@ from zotero_arxiv_daily.feedback.ledger import (
     FeedbackOutcome,
 )
 from zotero_arxiv_daily.pipeline.recommend import package_result
-from zotero_arxiv_daily.profile.models import PreferenceFacet, RemoteProfile
+from zotero_arxiv_daily.profile.models import PreferenceFacet, RemoteServingProfile
 from zotero_arxiv_daily.profile.quality import (
     ApprovedQualityExample,
     QualityProfileStore,
     build_quality_reference_profile,
 )
 from zotero_arxiv_daily.site.models import PublishedRecommendationSet, write_published_set
-from zotero_arxiv_daily.zotero.models import ZoteroCollection
+from zotero_arxiv_daily.zotero.models import SyncBatch, ZoteroCollection, ZoteroItem
+from zotero_arxiv_daily.zotero.storage import ZoteroStore
 
 
 def test_doctor_command_returns_configuration_exit_code_without_secret_output(
@@ -47,6 +48,73 @@ def test_arxiv_retrieval_defaults_to_released_discovery_policy() -> None:
     args = cli.build_parser().parse_args(["arxiv", "retrieve", "--profile", "profile.json"])
 
     assert args.discovery_mode == "v0.2.1"
+
+
+def test_profile_build_writes_separate_local_and_serving_files(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str], tmp_path: Path
+) -> None:
+    feature_key = "test-profile-feature-key-0000000000000001"
+    database = tmp_path / "zotero.sqlite3"
+    store = ZoteroStore(database)
+    store.apply(
+        SyncBatch(
+            1,
+            (
+                ZoteroItem(
+                    "PAPER001",
+                    1,
+                    "journalArticle",
+                    None,
+                    "Private learning methods",
+                    (),
+                    (),
+                    (),
+                    (),
+                    "",
+                    None,
+                    False,
+                ),
+            ),
+            (),
+        )
+    )
+    local_output = tmp_path / "local-profile.json"
+    serving_output = tmp_path / "serving-profile.json"
+    monkeypatch.setattr(
+        cli,
+        "load_config",
+        lambda **_: AppConfig(local_database_path=str(database), profile_feature_key=feature_key),
+    )
+
+    exit_code = cli.main(
+        [
+            "profile",
+            "build",
+            "--local-output",
+            str(local_output),
+            "--output",
+            str(serving_output),
+        ]
+    )
+
+    assert exit_code == 0
+    assert "protected lexical features" in capsys.readouterr().out
+    assert "private" in local_output.read_text(encoding="utf-8")
+    serving_payload = json.loads(serving_output.read_text(encoding="utf-8"))
+    assert serving_payload["schema_version"] == 5
+    assert "topics" not in serving_payload
+    assert "private" not in serving_output.read_text(encoding="utf-8")
+
+
+def test_profile_build_requires_the_feature_key_before_accessing_local_state(
+    monkeypatch: MonkeyPatch, capsys: CaptureFixture[str]
+) -> None:
+    monkeypatch.setattr(cli, "load_config", lambda **_: AppConfig())
+
+    exit_code = cli.main(["profile", "build"])
+
+    assert exit_code == 4
+    assert "ZAD_PROFILE_FEATURE_KEY" in capsys.readouterr().out
 
 
 def test_controlled_discovery_refuses_the_production_candidate_state(
@@ -75,8 +143,8 @@ def test_arxiv_retrieval_rejects_empty_profile_before_network(
     monkeypatch.setattr(cli, "load_config", lambda **_: AppConfig())
     monkeypatch.setattr(
         cli,
-        "read_remote_profile",
-        lambda _: RemoteProfile(1, 1, (), (), (), ()),
+        "read_serving_profile",
+        lambda _: RemoteServingProfile(1, 1, (), (), (), ()),
     )
     monkeypatch.setattr(
         cli,
@@ -99,8 +167,8 @@ def test_controlled_discovery_uses_profile_facets_and_separate_shadow_state(
     monkeypatch.setattr(cli, "load_config", lambda **_: AppConfig())
     monkeypatch.setattr(
         cli,
-        "read_remote_profile",
-        lambda _: RemoteProfile(
+        "read_serving_profile",
+        lambda _: RemoteServingProfile(
             4,
             1,
             (),
@@ -296,7 +364,7 @@ def test_quality_profile_commands_inspect_aggregates_and_clear_approval(
 def test_recommend_command_records_candidate_pool_degradation_in_manifest(
     monkeypatch: MonkeyPatch, tmp_path: Path
 ) -> None:
-    profile = RemoteProfile(1, 9, (), (), (), ())
+    profile = RemoteServingProfile(1, 9, (), (), (), ())
     source_checkpoint = datetime(2026, 8, 1, 12, 0, tzinfo=UTC)
 
     class _CandidateStore:
@@ -332,7 +400,7 @@ def test_recommend_command_records_candidate_pool_degradation_in_manifest(
         )
 
     monkeypatch.setattr(cli, "load_config", lambda **_: AppConfig(deepseek_api_key="key"))
-    monkeypatch.setattr(cli, "read_remote_profile", lambda path: profile)
+    monkeypatch.setattr(cli, "read_serving_profile", lambda path: profile)
     monkeypatch.setattr(cli, "ArxivStateStore", _CandidateStore)
     monkeypatch.setattr(cli, "RecommendationHistoryStore", _History)
     monkeypatch.setattr(cli, "run_recommendation", _run)

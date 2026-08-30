@@ -8,7 +8,7 @@ from zotero_arxiv_daily.evaluation.calibration import run_shadow_evaluation, wri
 from zotero_arxiv_daily.evaluation.corpus import CorpusStore
 from zotero_arxiv_daily.evaluation.models import CorpusEvent, CorpusLabel, JudgmentKind
 from zotero_arxiv_daily.evaluation.offline import make_evaluation_snapshot
-from zotero_arxiv_daily.profile.models import RemoteProfile
+from zotero_arxiv_daily.profile.models import RemoteServingProfile
 from zotero_arxiv_daily.ranking.weights import DEFAULT_WEIGHT_SET
 
 _NOW = datetime(2026, 8, 4, tzinfo=UTC)
@@ -48,7 +48,7 @@ def test_shadow_evaluation_is_provisional_and_never_mutates_weight_state(tmp_pat
         )
     )
     snapshot = make_evaluation_snapshot(corpus_store.snapshot(_NOW), created_at=_NOW)
-    profile = RemoteProfile(4, 1, ("learning",), ("cs.LG",), (), ())
+    profile = RemoteServingProfile(4, 1, ("learning",), ("cs.LG",), (), ())
     report = run_shadow_evaluation(
         (
             _candidate("2401.00001", "Learning alpha"),

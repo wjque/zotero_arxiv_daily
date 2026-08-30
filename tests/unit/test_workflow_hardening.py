@@ -27,6 +27,8 @@ def test_daily_workflow_guards_model_cost_and_promotes_history_after_deployment(
     assert workflow.index("Deploy GitHub Pages") < workflow.index("Persist successful run state")
     assert "git worktree add -B state runtime/state origin/state" in workflow
     assert "ZAD_STATE_ENCRYPTION_KEY: ${{ secrets.STATE_ENCRYPTION_KEY }}" in workflow
+    assert "ZAD_PROFILE_FEATURE_KEY: ${{ secrets.ZAD_PROFILE_FEATURE_KEY }}" in workflow
+    assert "printf '%s' \"$REMOTE_PROFILE\" > runtime/remote-profile.json" in workflow
     assert "state decrypt" in workflow
     assert "state encrypt" in workflow
     assert "Purge legacy plaintext state history" in workflow

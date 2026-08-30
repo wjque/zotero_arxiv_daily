@@ -47,7 +47,8 @@ from zotero_arxiv_daily.llm.refinement import (
     run_explanations,
     run_judgments,
 )
-from zotero_arxiv_daily.profile.models import RemoteProfile
+from zotero_arxiv_daily.profile.export import serving_profile_payload
+from zotero_arxiv_daily.profile.models import RemoteServingProfile
 from zotero_arxiv_daily.profile.quality import QualityReferenceProfile
 from zotero_arxiv_daily.profile.quality_policy import (
     DEFAULT_QUALITY_REFERENCE_POLICY,
@@ -84,13 +85,14 @@ from zotero_arxiv_daily.ranking.weights import (
 
 def recommend(
     candidates: tuple[ArxivCandidate, ...],
-    profile: RemoteProfile,
+    profile: RemoteServingProfile,
     proposals: tuple[ModelProposal, ...],
     now: datetime,
     *,
     author_bonus: float = 0.75,
     institution_bonus: float = 0.5,
     identity_bonus_cap: float = 1.0,
+    profile_feature_key: str | None = None,
     weight_set: WeightSet = DEFAULT_WEIGHT_SET,
 ) -> tuple[RecommendationRecord, ...]:
     """Apply local policy after model validation; models cannot select URLs or state changes."""
@@ -103,6 +105,7 @@ def recommend(
             author_bonus=author_bonus,
             institution_bonus=institution_bonus,
             identity_bonus_cap=identity_bonus_cap,
+            profile_feature_key=profile_feature_key,
             weight_set=weight_set,
         )
     )
@@ -143,7 +146,7 @@ def _proposal_records(
 
 def package_result(
     records: tuple[RecommendationRecord, ...],
-    profile: RemoteProfile,
+    profile: RemoteServingProfile,
     now: datetime,
     *,
     model: str,
@@ -220,7 +223,7 @@ def package_result(
 
 def run_recommendation(
     candidates: tuple[ArxivCandidate, ...],
-    profile: RemoteProfile,
+    profile: RemoteServingProfile,
     now: datetime,
     provider: ProposalProvider,
     cache: ProposalCache,
@@ -233,6 +236,7 @@ def run_recommendation(
     author_bonus: float = 0.75,
     institution_bonus: float = 0.5,
     identity_bonus_cap: float = 1.0,
+    profile_feature_key: str | None = None,
     completed_at: datetime | None = None,
     weight_set: WeightSet = DEFAULT_WEIGHT_SET,
     batch_size: int = 40,
@@ -256,6 +260,7 @@ def run_recommendation(
         author_bonus=author_bonus,
         institution_bonus=institution_bonus,
         identity_bonus_cap=identity_bonus_cap,
+        profile_feature_key=profile_feature_key,
         weight_set=weight_set,
     )[:pre_rank_limit]
     selected_candidates = tuple(item.candidate for item in ranked)
@@ -292,6 +297,7 @@ def run_recommendation(
         author_bonus=author_bonus,
         institution_bonus=institution_bonus,
         identity_bonus_cap=identity_bonus_cap,
+        profile_feature_key=profile_feature_key,
         weight_set=weight_set,
     )
     duration_seconds = perf_counter() - started
@@ -328,7 +334,7 @@ def run_recommendation(
 
 def run_baseline_recommendation(
     candidates: tuple[ArxivCandidate, ...],
-    profile: RemoteProfile,
+    profile: RemoteServingProfile,
     now: datetime,
     provider: ProposalProvider,
     cache: ProposalCache,
@@ -341,6 +347,7 @@ def run_baseline_recommendation(
     author_bonus: float = 0.75,
     institution_bonus: float = 0.5,
     identity_bonus_cap: float = 1.0,
+    profile_feature_key: str | None = None,
     completed_at: datetime | None = None,
     batch_size: int = 40,
     max_requests: int = 2,
@@ -363,6 +370,7 @@ def run_baseline_recommendation(
         author_bonus=author_bonus,
         institution_bonus=institution_bonus,
         identity_bonus_cap=identity_bonus_cap,
+        profile_feature_key=profile_feature_key,
     )[:pre_rank_limit]
     selected_candidates = tuple(item.candidate for item in ranked)
     cached, missing, cache_hits = _load_cached_proposals(
@@ -398,6 +406,7 @@ def run_baseline_recommendation(
             author_bonus=author_bonus,
             institution_bonus=institution_bonus,
             identity_bonus_cap=identity_bonus_cap,
+            profile_feature_key=profile_feature_key,
         )
     )
     records = order_baseline(_proposal_records(selected, cached + fresh))
@@ -435,7 +444,7 @@ def run_baseline_recommendation(
 
 def run_refined_recommendation(
     candidates: tuple[ArxivCandidate, ...],
-    profile: RemoteProfile,
+    profile: RemoteServingProfile,
     now: datetime,
     provider: StructuredProvider,
     cache: ProposalCache,
@@ -448,6 +457,7 @@ def run_refined_recommendation(
     author_bonus: float = 0.75,
     institution_bonus: float = 0.5,
     identity_bonus_cap: float = 1.0,
+    profile_feature_key: str | None = None,
     weight_set: WeightSet = DEFAULT_WEIGHT_SET,
     project_page_client: ProjectPageClient | None = None,
     paper_section_client: PaperSectionClient | None = None,
@@ -483,6 +493,7 @@ def run_refined_recommendation(
         author_bonus=author_bonus,
         institution_bonus=institution_bonus,
         identity_bonus_cap=identity_bonus_cap,
+        profile_feature_key=profile_feature_key,
         weight_set=weight_set,
     )[:pre_rank_limit]
     preliminary_candidates = tuple(item.candidate for item in preliminary)
@@ -494,6 +505,7 @@ def run_refined_recommendation(
         author_bonus=author_bonus,
         institution_bonus=institution_bonus,
         identity_bonus_cap=identity_bonus_cap,
+        profile_feature_key=profile_feature_key,
         weight_set=weight_set,
         extra_features={
             identifier: (_project_page_feature(value),)
@@ -578,6 +590,7 @@ def run_refined_recommendation(
         author_bonus=author_bonus,
         institution_bonus=institution_bonus,
         identity_bonus_cap=identity_bonus_cap,
+        profile_feature_key=profile_feature_key,
         weight_set=weight_set,
         extra_features={
             identifier: _assessment_features(
@@ -742,7 +755,7 @@ def run_refined_recommendation(
 
 def _load_cached_proposals(
     candidates: tuple[ArxivCandidate, ...],
-    profile: RemoteProfile,
+    profile: RemoteServingProfile,
     cache: ProposalCache,
     prompt_version: str,
     model: str,
@@ -899,11 +912,14 @@ def _explanation_record(
 def _relevance_signals(item: ScoredCandidate) -> tuple[str, ...]:
     components = dict(item.components)
     signals: list[str] = []
-    if components.get("lexical", 0.0) > 0:
+    if any(
+        components.get(name, 0.0) > 0
+        for name in ("lexical", "long_term_lexical", "recent_lexical", "prototype")
+    ):
         signals.append("topic_overlap")
     if components.get("category", 0.0) >= 0.6:
         signals.append("category_overlap")
-    if components.get("facet", 0.0) > 0:
+    if any(components.get(name, 0.0) > 0 for name in ("facet", "long_term_facet", "recent_facet")):
         signals.append("preference_facet_overlap")
     if components.get("watched_author", 0.0) > 0:
         signals.append("watched_author")
@@ -993,27 +1009,10 @@ def _scientific_value_assessments(
     return values
 
 
-def _profile_digest(profile: RemoteProfile) -> str:
+def _profile_digest(profile: RemoteServingProfile) -> str:
     """Hash local ranking inputs for local cache invalidation without serializing them to logs."""
 
-    value = {
-        "schema_version": profile.schema_version,
-        "library_version": profile.source_library_version,
-        "topics": profile.topics,
-        "core_categories": profile.core_categories,
-        "adjacent_categories": profile.adjacent_categories,
-        "representative_terms": profile.representative_terms,
-        "watched_authors": tuple(
-            (identity.name, identity.aliases) for identity in profile.watched_authors
-        ),
-        "watched_institutions": tuple(
-            (identity.name, identity.aliases) for identity in profile.watched_institutions
-        ),
-        "facets": tuple(
-            (facet.kind, facet.value, facet.score, facet.confidence)
-            for facet in profile.preference_facets
-        ),
-    }
+    value = serving_profile_payload(profile)
     encoded = json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 

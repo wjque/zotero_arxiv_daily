@@ -11,7 +11,12 @@ import pytest
 from zotero_arxiv_daily.arxiv.models import ArxivCandidate, ArxivId
 from zotero_arxiv_daily.llm.cache import ProposalCache
 from zotero_arxiv_daily.llm.deepseek import DeepSeekClient
-from zotero_arxiv_daily.profile.models import RemoteProfile, WatchedIdentity
+from zotero_arxiv_daily.profile.build import project_serving_profile
+from zotero_arxiv_daily.profile.models import (
+    LocalInterestProfile,
+    RemoteServingProfile,
+    WatchedIdentity,
+)
 from zotero_arxiv_daily.ranking.baseline import (
     BASELINE_SCHEMA_VERSIONS,
     BASELINE_VERSION,
@@ -30,6 +35,7 @@ from zotero_arxiv_daily.storage.recommendation_history import HISTORY_SCHEMA_VER
 
 _BASELINE_PATH = Path("docs/baselines/v0.1.2.json")
 _NOW = datetime(2026, 8, 2, tzinfo=UTC)
+_FEATURE_KEY = "test-profile-feature-key-0000000000000001"
 
 
 def _candidate(
@@ -112,7 +118,7 @@ def test_baseline_contract_freezes_release_schemas_budgets_and_prompt() -> None:
 
 
 def test_baseline_score_components_and_stable_ties_are_characterized() -> None:
-    profile = RemoteProfile(
+    profile = RemoteServingProfile(
         3,
         7,
         ("learning", "methods"),
@@ -172,6 +178,41 @@ def test_baseline_score_components_and_stable_ties_are_characterized() -> None:
             "watched_institution": 0.0,
         }
     )
+
+
+def test_protected_profile_preserves_frozen_baseline_lexical_count() -> None:
+    legacy = RemoteServingProfile(
+        4,
+        7,
+        ("learning", "methods"),
+        ("cs.LG",),
+        (),
+        (),
+    )
+    protected = project_serving_profile(
+        LocalInterestProfile(
+            2,
+            7,
+            (("learning", 2.0), ("methods", 1.0)),
+            (),
+            (("cs.LG", 1.0, "test"),),
+            1,
+        ),
+        _FEATURE_KEY,
+    )
+    candidate = _candidate("2401.00001", "cs.LG", "Learning", summary="Methods")
+
+    legacy_components = dict(score_baseline((candidate,), legacy, _NOW)[0].components)
+    protected_components = dict(
+        score_baseline(
+            (candidate,),
+            protected,
+            _NOW,
+            profile_feature_key=_FEATURE_KEY,
+        )[0].components
+    )
+
+    assert protected_components == legacy_components
 
 
 def test_baseline_selection_freezes_quotas_diversity_and_empty_input() -> None:

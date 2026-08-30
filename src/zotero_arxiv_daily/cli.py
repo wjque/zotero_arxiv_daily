@@ -55,8 +55,14 @@ from zotero_arxiv_daily.pipeline.validation import (
     record_metadata_validation,
     validation_run_mode,
 )
-from zotero_arxiv_daily.profile.export import write_remote_profile
-from zotero_arxiv_daily.profile.models import WatchedIdentity
+from zotero_arxiv_daily.profile.export import (
+    write_local_interest_profile,
+    write_serving_profile,
+)
+from zotero_arxiv_daily.profile.models import (
+    REMOTE_SERVING_PROFILE_SCHEMA_VERSION,
+    WatchedIdentity,
+)
 from zotero_arxiv_daily.profile.quality import (
     QualityProfileStore,
     build_quality_reference_profile,
@@ -67,10 +73,10 @@ from zotero_arxiv_daily.profile.quality_policy import (
     quality_reference_policy_versions,
 )
 from zotero_arxiv_daily.profile.service import (
-    build_cached_remote_profile,
+    build_cached_profiles,
     local_curated_item_keys,
-    publish_github_secret,
-    read_remote_profile,
+    publish_github_profile_secrets,
+    read_serving_profile,
 )
 from zotero_arxiv_daily.ranking.weights import DEFAULT_WEIGHT_SET, WeightSet, WeightSetRegistry
 from zotero_arxiv_daily.security.state import decrypt_state_bundle, encrypt_state_directory
@@ -121,6 +127,9 @@ def build_parser() -> argparse.ArgumentParser:
         "--database", type=Path, help="Override the local SQLite database path"
     )
     build_parser.add_argument("--output", type=Path, default=Path("runtime/remote-profile.json"))
+    build_parser.add_argument(
+        "--local-output", type=Path, default=Path("runtime/local-interest-profile.json")
+    )
     build_parser.add_argument("--payload-budget", type=int, default=30 * 1024)
     build_parser.add_argument(
         "--corpus-state", type=Path, default=Path("runtime/curated-corpus.json")
@@ -130,6 +139,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     publish_parser.add_argument("--input", type=Path, default=Path("runtime/remote-profile.json"))
     publish_parser.add_argument("--secret-name", default="ZOTERO_ARXIV_DAILY_PROFILE")
+    publish_parser.add_argument("--feature-key-secret-name", default="ZAD_PROFILE_FEATURE_KEY")
     site_parser = subcommands.add_parser("site", help="Build the static recommendation site")
     site_commands = site_parser.add_subparsers(dest="site_command", required=True)
     site_build_parser = site_commands.add_parser(
@@ -454,9 +464,12 @@ def main(argv: Sequence[str] | None = None) -> int:
                 )
             return 0
         if args.command == "profile" and args.profile_command == "build":
+            if not config.profile_feature_key:
+                raise ApplicationError("set ZAD_PROFILE_FEATURE_KEY before building a profile")
             store = ZoteroStore(args.database or Path(config.local_database_path))
-            remote, cache_hits = build_cached_remote_profile(
+            local, serving, cache_hits = build_cached_profiles(
                 store,
+                config.profile_feature_key,
                 args.payload_budget,
                 watched_authors=tuple(
                     WatchedIdentity(item.name, item.aliases) for item in config.watched_authors
@@ -466,20 +479,31 @@ def main(argv: Sequence[str] | None = None) -> int:
                 ),
                 curated_item_keys=local_curated_item_keys(args.corpus_state),
             )
-            write_remote_profile(remote, args.output)
+            write_local_interest_profile(local, args.local_output)
+            write_serving_profile(serving, args.output)
             print(
                 "profile exported: "
-                f"{len(remote.topics)} topics, {len(remote.core_categories)} categories, "
+                f"{len(serving.lexical_features)} protected lexical features, "
+                f"{len(serving.interest_prototypes)} anonymous prototypes, "
+                f"{len(serving.core_categories)} categories, "
                 f"{cache_hits} cache hits"
             )
             return 0
         if args.command == "profile" and args.profile_command == "publish-github":
             if not config.github_repository:
                 raise ApplicationError("set ZAD_GITHUB_REPOSITORY before publishing a profile")
-            publish_github_secret(
-                read_remote_profile(args.input), config.github_repository, args.secret_name
+            serving_profile = read_serving_profile(args.input)
+            publish_github_profile_secrets(
+                serving_profile,
+                config.profile_feature_key,
+                config.github_repository,
+                args.secret_name,
+                args.feature_key_secret_name,
             )
-            print("protected profile published to GitHub Secret")
+            if serving_profile.schema_version == REMOTE_SERVING_PROFILE_SCHEMA_VERSION:
+                print("protected serving profile and feature key published to GitHub Secrets")
+            else:
+                print("legacy protected serving profile published to GitHub Secret")
             return 0
         if args.command == "site" and args.site_command == "build":
             candidate_pool_status = ArxivStateStore(args.candidate_state).retrieval_status()
@@ -634,10 +658,11 @@ def main(argv: Sequence[str] | None = None) -> int:
             weight_registry.register(DEFAULT_WEIGHT_SET)
             report = run_shadow_evaluation(
                 ArxivStateStore(args.candidate_state).candidates(),
-                read_remote_profile(args.profile),
+                read_serving_profile(args.profile),
                 snapshot,
                 snapshot.cutoff_at,
                 weight_set=weight_registry.active(),
+                profile_feature_key=config.profile_feature_key,
             )
             write_shadow_report(report, args.output)
             print(f"shadow evaluation written: observation-only, {len(report.warnings)} warning(s)")
@@ -766,7 +791,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 raise ApplicationError(
                     "controlled-shadow discovery requires a separate --state path"
                 )
-            profile = read_remote_profile(args.profile)
+            profile = read_serving_profile(args.profile)
             if args.discovery_mode == "controlled-shadow":
                 queries = plan_discovery_queries(
                     profile.core_categories,
@@ -796,7 +821,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.command == "recommend" and args.recommend_command == "run":
             if not config.deepseek_api_key:
                 raise ApplicationError("set ZAD_DEEPSEEK_API_KEY before generating recommendations")
-            profile = read_remote_profile(args.profile)
+            profile = read_serving_profile(args.profile)
             started_at = datetime.now(UTC)
             history = RecommendationHistoryStore(args.history)
             weight_registry = WeightSetRegistry(
@@ -838,6 +863,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     author_bonus=config.author_preference_bonus,
                     institution_bonus=config.institution_preference_bonus,
                     identity_bonus_cap=config.identity_bonus_cap,
+                    profile_feature_key=config.profile_feature_key,
                     batch_size=config.recommendation_candidate_limit,
                     max_requests=2,
                     max_request_tokens=config.llm_request_token_limit,
@@ -859,6 +885,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     author_bonus=config.author_preference_bonus,
                     institution_bonus=config.institution_preference_bonus,
                     identity_bonus_cap=config.identity_bonus_cap,
+                    profile_feature_key=config.profile_feature_key,
                     weight_set=weight_set,
                     project_page_client=ProjectPageClient(UrlLibProjectPageTransport()),
                     paper_section_client=PaperSectionClient(),
@@ -885,6 +912,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                     author_bonus=config.author_preference_bonus,
                     institution_bonus=config.institution_preference_bonus,
                     identity_bonus_cap=config.identity_bonus_cap,
+                    profile_feature_key=config.profile_feature_key,
                     weight_set=weight_set,
                     batch_size=config.llm_judge_batch_size,
                     max_requests=config.llm_max_requests,

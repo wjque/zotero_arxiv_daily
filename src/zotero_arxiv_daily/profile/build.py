@@ -6,19 +6,27 @@ import json
 import math
 import re
 from collections import defaultdict
-from dataclasses import asdict
 from datetime import UTC, datetime
 from typing import Any
 
 from zotero_arxiv_daily.arxiv.categories import adjacent_categories
 from zotero_arxiv_daily.core.errors import ConfigurationError
+from zotero_arxiv_daily.profile.export import serving_profile_payload
 from zotero_arxiv_daily.profile.models import (
-    INTEREST_PROFILE_SCHEMA_VERSION,
-    REMOTE_PROFILE_SCHEMA_VERSION,
-    InterestProfile,
+    LOCAL_INTEREST_PROFILE_SCHEMA_VERSION,
+    MAX_PROTECTED_LEXICAL_FEATURES,
+    PROFILE_FEATURE_HASH_VERSION,
+    REMOTE_SERVING_PROFILE_SCHEMA_VERSION,
     ItemDigest,
+    LocalInterestProfile,
     PreferenceFacet,
-    RemoteProfile,
+    ProtectedLexicalFeature,
+    RemoteServingProfile,
+)
+from zotero_arxiv_daily.profile.protection import (
+    lexical_tokens,
+    protected_feature_digest,
+    validate_profile_feature_key,
 )
 
 _WORD = re.compile(r"[A-Za-z][A-Za-z0-9-]{2,31}")
@@ -101,13 +109,13 @@ _FEEDBACK_TAG_PREFIXES = ("ranking-reason:", "zad:")
 _LABEL_COLLECTION_NAMES = frozenset({"positive", "negative", "hard negative"})
 
 
-def build_profile(
+def build_local_interest_profile(
     records: tuple[tuple[str, str, str, tuple[str, ...]], ...],
     library_version: int,
     *,
     observed_at: datetime | None = None,
     curated_item_keys: frozenset[str] = frozenset(),
-) -> InterestProfile:
+) -> LocalInterestProfile:
     """Build a stable weighted profile from local normalized records only."""
 
     scores: defaultdict[str, float] = defaultdict(float)
@@ -153,8 +161,8 @@ def build_profile(
     ranked = tuple(sorted(scores.items(), key=lambda item: (-item[1], item[0]))[:80])
     recent_ranked = tuple(sorted(recent.items(), key=lambda item: (-item[1], item[0]))[:30])
     categories = _categories(ranked)
-    return InterestProfile(
-        INTEREST_PROFILE_SCHEMA_VERSION,
+    return LocalInterestProfile(
+        LOCAL_INTEREST_PROFILE_SCHEMA_VERSION,
         library_version,
         ranked,
         recent_ranked,
@@ -165,8 +173,90 @@ def build_profile(
     )
 
 
-def project_remote(profile: InterestProfile, payload_budget: int = 30 * 1024) -> RemoteProfile:
-    """Apply a positive allowlist and bounded projection before remote transport."""
+def project_serving_profile(
+    profile: LocalInterestProfile,
+    profile_feature_key: str,
+    payload_budget: int = 30 * 1024,
+) -> RemoteServingProfile:
+    """Project local interests into keyed, bounded features for remote scoring."""
+
+    key = validate_profile_feature_key(profile_feature_key)
+    core = tuple(category for category, _, _ in profile.categories[:6])
+    adjacent = tuple(
+        sorted(
+            {
+                value
+                for category in core
+                for value in adjacent_categories(category)
+                if value not in core
+            }
+        )
+    )[:6]
+    long_term = _normalized_lexical_weights(profile.terms)
+    recent = _normalized_lexical_weights(profile.recent_terms)
+    selected_tokens = tuple(
+        sorted(
+            set(long_term) | set(recent),
+            key=lambda value: (
+                -(0.7 * long_term.get(value, 0.0) + 0.3 * recent.get(value, 0.0)),
+                value,
+            ),
+        )[:MAX_PROTECTED_LEXICAL_FEATURES]
+    )
+    lexical_features = tuple(
+        sorted(
+            (
+                ProtectedLexicalFeature(
+                    protected_feature_digest(token, key, namespace="lexical"),
+                    long_term.get(token, 0.0),
+                    recent.get(token, 0.0),
+                )
+                for token in selected_tokens
+            ),
+            key=lambda feature: feature.digest,
+        )
+    )
+    long_term_facets = profile.long_term_facets[:12]
+    recent_facets = profile.recent_facets[:8]
+    serving = RemoteServingProfile(
+        REMOTE_SERVING_PROFILE_SCHEMA_VERSION,
+        profile.source_library_version,
+        (),
+        core,
+        adjacent,
+        (),
+        preference_facets=long_term_facets + recent_facets,
+        feature_hash_version=PROFILE_FEATURE_HASH_VERSION,
+        feature_key_verifier=protected_feature_digest(
+            "serving-profile-key", key, namespace="key-verifier"
+        ),
+        lexical_features=lexical_features,
+        baseline_lexical_digests=tuple(
+            sorted(
+                {
+                    protected_feature_digest(term, key, namespace="baseline-lexical")
+                    for term, _score in profile.terms[:30]
+                    if _safe_term(term)
+                }
+            )
+        ),
+        long_term_facets=long_term_facets,
+        recent_facets=recent_facets,
+    )
+    encoded = json.dumps(
+        serving_profile_payload(serving), ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
+    if len(encoded) > payload_budget:
+        raise ConfigurationError(
+            f"serving profile is {len(encoded)} bytes; budget is {payload_budget} bytes"
+        )
+    return serving
+
+
+def project_legacy_serving_profile(
+    profile: LocalInterestProfile, payload_budget: int = 30 * 1024
+) -> RemoteServingProfile:
+    """Revalidate a legacy plaintext profile without expanding its trust boundary."""
 
     topics = tuple(term for term, _ in profile.terms[:30] if _safe_term(term))
     core = tuple(category for category, _, _ in profile.categories[:6])
@@ -180,21 +270,23 @@ def project_remote(profile: InterestProfile, payload_budget: int = 30 * 1024) ->
             }
         )
     )[:6]
-    remote = RemoteProfile(
-        REMOTE_PROFILE_SCHEMA_VERSION,
+    serving = RemoteServingProfile(
+        4,
         profile.source_library_version,
         topics,
         core,
         adjacent,
         topics[:12],
-        preference_facets=profile.long_term_facets[:12] + profile.recent_facets[:8],
+        preference_facets=profile.long_term_facets[:20],
     )
-    encoded = json.dumps(asdict(remote), ensure_ascii=False, separators=(",", ":")).encode("utf-8")
+    encoded = json.dumps(
+        serving_profile_payload(serving), ensure_ascii=False, separators=(",", ":")
+    ).encode("utf-8")
     if len(encoded) > payload_budget:
         raise ConfigurationError(
-            f"remote profile is {len(encoded)} bytes; budget is {payload_budget} bytes"
+            f"serving profile is {len(encoded)} bytes; budget is {payload_budget} bytes"
         )
-    return remote
+    return serving
 
 
 def make_digest(
@@ -204,7 +296,7 @@ def make_digest(
 
     root = _mapping(payload)
     signals = tuple(sorted(_SIGNAL_WEIGHTS.items()))
-    terms = tuple(sorted(set(_terms(_text_fields(root) + " " + " ".join(children))))[:40])
+    terms = tuple(sorted(set(_digest_terms(root, children)))[:40])
     categories = tuple(
         category for category, _, _ in _categories(tuple((term, 1.0) for term in terms))
     )
@@ -232,6 +324,39 @@ def _add_terms(
     for term in terms:
         long_term[term] += weight
         recent[term] += weight * recency
+
+
+def _normalized_lexical_weights(
+    weighted_terms: tuple[tuple[str, float], ...],
+) -> dict[str, float]:
+    scores: defaultdict[str, float] = defaultdict(float)
+    for term, score in weighted_terms:
+        if not _safe_term(term):
+            continue
+        for token in lexical_tokens(term):
+            scores[token] += score
+    maximum = max(scores.values(), default=0.0)
+    return {token: min(score / maximum, 1.0) for token, score in scores.items() if maximum > 0}
+
+
+def _digest_terms(root: dict[str, Any], children: tuple[str, ...]) -> tuple[str, ...]:
+    parts = [_text_fields(root)]
+    for child in children:
+        child_data = _mapping(child)
+        parts.extend(
+            str(child_data.get(field) or "")
+            for field in ("note_text", "annotation_text", "annotation_comment")
+        )
+    for tag, _manual in root.get("tags", []):
+        tag_text = str(tag)
+        if not tag_text.casefold().startswith(_FEEDBACK_TAG_PREFIXES):
+            parts.append(tag_text)
+    parts.extend(
+        str(collection)
+        for collection in root.get("collection_names", [])
+        if str(collection).casefold().strip() not in _LABEL_COLLECTION_NAMES
+    )
+    return _terms(" ".join(parts))
 
 
 def _recency_weight(value: str, observed_at: datetime | None) -> float:

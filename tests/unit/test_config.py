@@ -15,6 +15,7 @@ def test_default_recommendation_output_language_is_english() -> None:
     assert config.llm_request_token_limit == 12_000
     assert config.llm_request_byte_limit == 65_536
     assert config.state_encryption_key is None
+    assert config.profile_feature_key is None
 
 
 def test_configuration_precedence_is_defaults_file_environment_then_cli(tmp_path: Path) -> None:
@@ -81,6 +82,15 @@ def test_state_encryption_key_is_separate_and_bounded() -> None:
     assert config.state_encryption_key == "state-passphrase-1234"
     with pytest.raises(ConfigurationError, match="state_encryption_key"):
         load_config(environment={"ZAD_STATE_ENCRYPTION_KEY": "too-short"})
+
+
+def test_profile_feature_key_is_separate_and_bounded() -> None:
+    value = "test-profile-feature-key-0000000000000001"
+    config = load_config(environment={"ZAD_PROFILE_FEATURE_KEY": value})
+
+    assert config.profile_feature_key == value
+    with pytest.raises(ConfigurationError, match="profile_feature_key"):
+        load_config(environment={"ZAD_PROFILE_FEATURE_KEY": "too-short"})
 
 
 def test_llm_budget_configuration_is_bounded_and_typed() -> None:

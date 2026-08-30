@@ -57,18 +57,24 @@ content. Override the storage location with `--database PATH` or `ZAD_LOCAL_DATA
 Stop or retry an interrupted sync normally: the SQLite transaction retains the previous usable
 state until the new batch is valid and complete.
 
-Build a compact local remote-profile candidate after synchronization:
+Generate a stable feature key once, keep it in a password manager or ignored local secret store,
+and export the local and remote-serving profiles after synchronization:
 
 ```bash
+export ZAD_PROFILE_FEATURE_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(32))')"
 uv run zotero-arxiv-daily profile build
 ```
 
-The v0.2 profile separates weak library metadata from stronger manual tags, collection membership,
-annotations, and optional curated positive examples. It uses local time decay for recent interests
-and derives bounded domain, method, and task facets. The protected v4 export contains only those
-derived facets and allowlisted topics; it never contains collection names or keys, titles, notes,
-annotations, identifiers, or labels. Use `--corpus-state PATH` to use a non-default local curated
-ledger; an absent ledger simply contributes no curated evidence.
+The key must contain at least 32 UTF-8 bytes and is independent of the Pages passphrase and encrypted
+state key. Reuse it for normal rebuilds; rotating it requires rebuilding and publishing both profile
+Secrets together. Never commit it.
+
+The local profile separates weak library metadata from stronger manual tags, collection membership,
+annotations, and optional curated positive examples. It retains weighted long-term and recent terms
+and controlled domain, method, and task facets. `runtime/local-interest-profile.json` stores that
+complete derived aggregate locally with owner-only permissions. The keyed v5 serving projection is
+written separately to `runtime/remote-profile.json`. Use `--corpus-state PATH` to select a
+non-default local curated ledger; an absent ledger contributes no curated evidence.
 
 Optional watched identities are structured configuration, not global defaults. Exact normalized
 names and aliases can add a bounded local score component; watchlists stay in the protected profile
@@ -118,12 +124,19 @@ is required; substring matching and author disambiguation are intentionally not 
 arXiv affiliation metadata gives no institution bonus. Defaults are `0.75` for an author, `0.5` for
 an institution, and `1.0` combined, configurable through the variables in `.env.example`.
 
-It writes `runtime/remote-profile.json` with owner-only permissions. The export contains only
-bounded topic terms and inferred arXiv categories; it excludes titles, abstracts, notes,
-annotations, identifiers, collections, and matching evidence. Unchanged local inputs reuse
-derived digest cache entries rather than regenerating them. URL/domain fragments and reserved
-`zad:`/`ranking-reason:` feedback tags are excluded from interest terms, so review labels cannot
+The v5 serving profile contains bounded arXiv categories, controlled facets, keyed long-term and
+recent lexical identities, anonymous paper-level prototypes, and keyed exact watchlist identities.
+It excludes plaintext free-form terms, watched names, titles, abstracts, notes, annotations, paper
+identifiers, collections, and feedback labels. The feature key is never placed in the profile JSON.
+Unchanged local inputs reuse derived digest cache entries. URL/domain fragments and reserved
+`zad:`/`ranking-reason:` tags are excluded before profile construction, so review labels cannot
 silently become recommendation topics.
+
+The serving snapshot does not update while the local host or Zotero is off. Remote GitHub Actions
+recommendations do continue: they hash public candidate metadata in the ephemeral runner and use the
+last explicitly published snapshot. The profile and matching key are never sent to DeepSeek. The
+controlled facets and arXiv categories remain readable inside the protected GitHub Secret, so this
+is a minimized trust boundary rather than zero disclosure to GitHub.
 
 ## Controlled candidate-coverage shadow
 
@@ -371,13 +384,20 @@ allowlisted aggregate manifest and comparison fields. A separate manual-only fai
 stops after Pages deployment so that the next run can exercise reconciliation; it must remain false
 outside that controlled rehearsal.
 
-To publish a validated exported profile to a GitHub Actions Secret, authenticate `gh` locally and
-set `ZAD_GITHUB_REPOSITORY`; the profile JSON is sent on standard input rather than in command-line
-arguments:
+To publish a validated exported profile, authenticate `gh` locally and set
+`ZAD_GITHUB_REPOSITORY`. The command writes the profile and feature key through standard input to
+the separate `ZOTERO_ARXIV_DAILY_PROFILE` and `ZAD_PROFILE_FEATURE_KEY` GitHub Actions Secrets:
 
 ```bash
 uv run zotero-arxiv-daily profile publish-github
 ```
+
+Publication verifies that the key matches the profile before changing either Secret. Because two
+Secret updates are not transactional, a workflow starting between them fails closed on the embedded
+key verifier and leaves the previous deployed site intact. Existing v1-v4 profile Secrets remain
+readable without the feature key. Before the first v5 publication, retain an owner-only copy of the
+current v4 JSON under ignored `runtime/` storage if application-version rollback is required; it can
+be republished with the same command.
 
 ## Current status and operation
 

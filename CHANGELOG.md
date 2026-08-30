@@ -13,6 +13,9 @@
 - Added deterministic, bounded cross-category discovery for local shadow evaluation, including
   synthetic bridge-paper coverage, local facet acceptance, hard query and candidate budgets, and
   atomic fallback to the previous usable pool.
+- Added separate owner-only local-interest and keyed remote-serving profile artifacts. Serving
+  schema v5 carries bounded long-term/recent HMAC features, anonymous paper prototypes, protected
+  exact watchlists, and a key-pair verifier without plaintext free-form interests or names.
 
 ### Changed
 
@@ -21,6 +24,8 @@
 - Migrate pending browser schema-v1 actions without guessing a historical batch.
 - Keep the released v0.2.1 category path as the production default while requiring controlled
   cross-category runs to use a separate candidate-state file.
+- Score schema-v5 profiles on separate long-term, recent, controlled-facet, anonymous-prototype,
+  and exact-watchlist components while keeping the profile and matching key outside model payloads.
 
 ### Compatibility and Security
 
@@ -31,6 +36,9 @@
 - Cross-category arXiv requests contain only public category names and date intervals. Protected
   profile facets remain local, the public-candidate state schema is unchanged, and controlled shadow
   state can be removed without migration.
+- Remote-profile schemas v1-v4 remain readable without a feature key. Schema v5 requires a separate
+  `ZAD_PROFILE_FEATURE_KEY`; publication preflights the key pair, and a missing or mismatched pair
+  fails closed before model use while preserving the previous deployed site.
 
 ## v0.2.1 - 2026-08-18
 
