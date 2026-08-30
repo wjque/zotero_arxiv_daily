@@ -23,6 +23,10 @@
 - Added an offline objective report comparing per-batch predictions with realized explicit outcomes,
   including sample size, coverage, unlabeled impressions, and a proposed but unapproved calibration,
   written by a new `evaluate worthwhile` command.
+- Added declared bounded exploration that targets uncertain, potentially worthwhile papers rather
+  than category difference. A slot requires existing post-reading-value evidence, a promising
+  optimistic bound, and a still-wide interval, costs at most a declared risk budget of expected
+  worthwhile reads, and records what it spent and why every other candidate was refused.
 
 ### Changed
 
@@ -36,6 +40,9 @@
 - Made expected-worthwhile an opt-in selection objective that reorders the qualified pool only.
   Minimum score, judged quality, confident scientific-value rejection, source quotas, author and
   topic diversity, and the batch target are unchanged, and relevance remains the production default.
+- Unified batch eligibility behind a single definition shared by ordinary selection and exploration,
+  so a reserved exploration slot cannot admit a paper ordinary selection would have rejected and a
+  pick outside the qualified pool is dropped rather than forced.
 
 ### Compatibility and Security
 
@@ -52,6 +59,9 @@
 - The worthwhile objective is declared and reviewed, never fitted to collected feedback. Its offline
   report is aggregate-only owner-only local output outside the encrypted state allowlist, is never
   published or migrated, and activates nothing; the scheduled path stays on the v0.2.1 objective.
+- Exploration constants are declared and reviewed, spend a bounded budget of at most one paper and a
+  declared amount of expected worthwhile reads per batch, and decline rather than force a candidate.
+  The pipeline and all three workflows are untouched, so scheduled runs never explore.
 
 ## v0.2.1 - 2026-08-18
 
