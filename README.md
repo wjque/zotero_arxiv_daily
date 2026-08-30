@@ -285,20 +285,29 @@ The objective reorders the qualified pool only. Minimum score, judged quality, c
 scientific-value rejection, source quotas, author and topic diversity, and the batch target are
 unchanged, and ties break on canonical arXiv ID. The declared `declared-prior-v1` policy is
 reviewed, never fitted to collected feedback, and relevance remains the production default, so the
-scheduled path stays on the released v0.2.1 objective. Observe the objective against explicit
-outcomes locally:
+scheduled path stays on the released v0.2.1 objective.
+
+Each refined publication records what the objective predicted for exactly the papers it published,
+under the same batch identity impressions use, so the two sides of the comparison cannot drift
+apart. The ignored `runtime/worthwhile-predictions.json` holds canonical arXiv IDs and normalized
+scores, is carried inside the encrypted state bundle, and is read only by the offline report: it is
+never published, never sent to the model, and never read back into ranking. Deleting it restores
+realized-outcome-only reporting exactly. Observe the objective against explicit outcomes locally:
 
 ```bash
 uv run zotero-arxiv-daily evaluate worthwhile \
   --state runtime/feedback-state.json \
+  --predictions runtime/worthwhile-predictions.json \
   --output runtime/worthwhile-report.json
 ```
 
-The ignored `runtime/worthwhile-report.json` contains aggregate counts, coverage, per-batch
-prediction comparison when predictions are supplied, and a proposed but unapproved calibration only.
-It carries no paper identifiers. A delayed outcome is credited to its original impression batch, and
-an unlabeled impression is reported as unknown rather than as not worthwhile. The report activates
-nothing; adopting the objective is a separate explicit operator decision.
+The ignored `runtime/worthwhile-report.json` contains aggregate counts, coverage, the per-batch
+predicted-minus-realized comparison, and a proposed but unapproved calibration only. It carries no
+paper identifiers. A delayed outcome is credited to its original impression batch, and an unlabeled
+impression is reported as unknown rather than as not worthwhile. A history that predates recorded
+predictions covers only some batches and says so, because a subset-sum prediction is not comparable
+with an all-batch realized count. The report activates nothing; adopting the objective is a separate
+explicit operator decision.
 
 Alongside that objective, v0.3 redefines exploration as uncertainty rather than category
 difference. An off-category paper the ranker already scores confidently teaches nothing, and a paper
